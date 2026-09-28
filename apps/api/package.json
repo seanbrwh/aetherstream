@@ -5,7 +5,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint \"src/**/*.ts\""
+    "lint": "eslint ."
   },
   "dependencies": {
     "@aetherstream/types": "workspace:*"
@@ -15,5 +15,6 @@
     "@aetherstream/tsconfig": "workspace:*",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
-  }
+  },
+  "type": "module"
 }

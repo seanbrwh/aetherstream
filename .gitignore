@@ -1,40 +1,16 @@
-
-# dependencies
+# Dependencies
 node_modules/
+
+# Build outputs
+dist/
+build/
 
 # Turborepo
 .turbo/
 
-# Vite build output and cache
-dist/
-.vite/
-
-# logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# environment files
+# Environment variables
 .env
-.env.*
-!.env.example
-!.env.*.example
+.env.local
 
-# TypeScript and test coverage
-*.tsbuildinfo
-coverage/
-.nyc_output/
-
-# local caches
-.cache/
-.eslintcache
-
-# OS and editor files
+# OS generated files
 .DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
-*.swo
