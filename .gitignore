@@ -18,3 +18,5 @@ apps/api/generated/
 
 # OS generated files
 .DS_Store
+
+AGENTS.md
