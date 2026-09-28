@@ -1,0 +1,1 @@
+export const init = () => console.log('API scaffolding complete');

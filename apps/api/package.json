@@ -1,0 +1,19 @@
+{
+  "name": "api",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\""
+  },
+  "dependencies": {
+    "@aetherstream/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@aetherstream/eslint-config": "workspace:*",
+    "@aetherstream/tsconfig": "workspace:*",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
