@@ -1,43 +1,35 @@
-import { useEffect, useState } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { AuthProvider } from "./context/AuthContext";
+import ProtectedRoute from "./components/ProtectedRoute";
+import Layout from "./components/Layout";
 
-function App() {
-  const [apiStatus, setApiStatus] = useState<string>("Pinging Node API...");
+// Pages
+import Auth from "./pages/Auth";
+import Dashboard from "./pages/Dashboard";
+import Feed from "./pages/Feed";
+import Profile from "./pages/Profile";
 
-  useEffect(() => {
-    fetch("/api/health")
-      .then(async (res) => {
-        if (!res.ok) {
-          throw new Error(`Health check failed (${res.status})`);
-        }
-        return res.json() as Promise<{ timestamp: string }>;
-      })
-      .then((data) => {
-        setApiStatus(`Connected! Server Time: ${data.timestamp}`);
-      })
-      .catch((err) => {
-        console.error(err);
-        setApiStatus("Failed to connect to Node API.");
-      });
-  }, []);
-
+export default function App() {
   return (
-    <div
-      style={{
-        padding: "2rem",
-        fontFamily: "monospace",
-        background: "#1a1a1a",
-        color: "#00ffcc",
-        minHeight: "100vh",
-      }}
-    >
-      <h1>AetherStream Dashboard</h1>
-      <div style={{ marginTop: "2rem", padding: "1rem", border: "1px solid #00ffcc" }}>
-        <p>
-          <strong>Backend Status:</strong> {apiStatus}
-        </p>
-      </div>
-    </div>
+    <AuthProvider>
+      <BrowserRouter>
+        {/* The background color is now handled by Layout.tsx and Auth.tsx */}
+        <Routes>
+          {/* Public Route */}
+          <Route path="/login" element={<Auth />} />
+
+          {/* Protected Routes (Require JWT) */}
+          <Route element={<ProtectedRoute />}>
+            {/* Layout Wrapper (Provides Navbar) */}
+            <Route element={<Layout />}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/feed" element={<Feed />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            </Route>
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }
-
-export default App;

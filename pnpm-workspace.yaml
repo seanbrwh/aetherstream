@@ -3,5 +3,9 @@ packages:
   - "packages/*"
 allowBuilds:
   "@prisma/engines": true
+  bcrypt: false
   esbuild: false
   prisma: true
+overrides:
+  "@types/react": "18.3.12"
+  "@types/react-dom": "18.3.1"

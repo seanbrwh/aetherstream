@@ -6,10 +6,41 @@ datasource db {
   provider = "postgresql"
 }
 
+model User {
+  id                 String    @id @default(uuid())
+  email              String    @unique
+  passwordHash       String
+  resetToken         String?   @unique
+  resetTokenExpiry   DateTime?
+  createdAt          DateTime  @default(now())
+  posts              Post[]
+  comments           Comment[]
+}
+
 model Device {
   id        String   @id @default(uuid())
   name      String   @unique
   status    String   @default("offline")
   lastSeen  DateTime @default(now())
+  createdAt DateTime @default(now())
+}
+
+
+model Post {
+  id        String    @id @default(uuid())
+  content   String
+  authorId  String
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  comments  Comment[]
+  createdAt DateTime  @default(now())
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  content   String
+  postId    String
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 }
