@@ -7,40 +7,40 @@ datasource db {
 }
 
 model User {
-  id                 String    @id @default(uuid())
-  email              String    @unique
-  passwordHash       String
-  resetToken         String?   @unique
-  resetTokenExpiry   DateTime?
-  createdAt          DateTime  @default(now())
-  posts              Post[]
-  comments           Comment[]
+  id               String    @id @default(uuid())
+  email            String    @unique
+  passwordHash     String
+  resetToken       String?
+  resetTokenExpiry DateTime?
+  createdAt        DateTime  @default(now())
+  posts            Post[]
+  comments         Comment[]
 }
 
 model Device {
   id        String   @id @default(uuid())
-  name      String   @unique
-  status    String   @default("offline")
-  lastSeen  DateTime @default(now())
+  name      String
   createdAt DateTime @default(now())
 }
-
 
 model Post {
   id        String    @id @default(uuid())
   content   String
-  authorId  String
-  author    User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  comments  Comment[]
+  imageUrl  String?
+  audioUrl  String?
+  telemetry Json?
   createdAt DateTime  @default(now())
+  authorId  String
+  author    User      @relation(fields: [authorId], references: [id])
+  comments  Comment[]
 }
 
 model Comment {
   id        String   @id @default(uuid())
   content   String
-  postId    String
-  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  authorId  String
-  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
+  postId    String
+  post      Post     @relation(fields: [postId], references: [id])
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
+import { io } from "socket.io-client";
 import { useAuth } from "../context/AuthContext";
 
-// --- TYPES ---
 interface Author {
   email: string;
 }
@@ -13,21 +13,66 @@ interface Comment {
   author: Author;
 }
 
+interface TelemetrySnapshot {
+  timestamp: string | number;
+  system: {
+    active_mode: number;
+    rem_sensitivity_lvl: number;
+    geo_threshold_g: number;
+  };
+  radio: {
+    frequency: number;
+  };
+  sensors: {
+    environment: {
+      temp_c: number;
+      humidity_pct: number;
+      pressure_hpa: number;
+    };
+    mpr121: {
+      capacitance: number;
+      pad_mask: number;
+    };
+    mpu6050: {
+      peak_g: number;
+      accel: {
+        x: number;
+        y: number;
+        z: number;
+      };
+    };
+  };
+}
+
 interface Post {
   id: string;
   content: string;
+  imageUrl: string | null;
+  audioUrl: string | null;
+  telemetry: TelemetrySnapshot | null;
   createdAt: string;
   author: Author;
   comments: Comment[];
 }
 
+const MODES: Record<number, string> = {
+  1: "SPIRIT BOX",
+  2: "REM POD",
+  3: "GEOPHONE",
+  4: "ALICE BOX",
+};
+
 export default function Feed() {
   const { token, logout } = useAuth();
   const [posts, setPosts] = useState<Post[]>([]);
   const [newPostContent, setNewPostContent] = useState("");
-  // Object to track comment input state for each individual post
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [liveTelemetry, setLiveTelemetry] = useState<TelemetrySnapshot | null>(null);
+  const [lockedTelemetry, setLockedTelemetry] = useState<TelemetrySnapshot | null>(null);
   const [commentInputs, setCommentInputs] = useState<{ [postId: string]: string }>({});
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fetchFeed = async () => {
     try {
@@ -42,7 +87,7 @@ export default function Feed() {
         throw new Error("Session expired. Please log in again.");
       }
 
-      if (!res.ok) throw new Error("Failed to fetch feed data");
+      if (!res.ok) throw new Error("Failed to fetch field feed");
 
       const data = await res.json();
       setPosts(data);
@@ -53,29 +98,70 @@ export default function Feed() {
 
   useEffect(() => {
     fetchFeed();
+
+    // Hook into live hardware telemetry stream to allow 1-click snapshotting
+    const socketUrl = window.location.port === "5173" ? "http://localhost:3030" : "/";
+    const socket = io(socketUrl);
+
+    socket.on("sensor_update", (payload: TelemetrySnapshot) => {
+      setLiveTelemetry(payload);
+    });
+
+    return () => {
+      socket.disconnect();
+    };
   }, [token, logout]);
 
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPostContent.trim()) return;
+    if (!newPostContent.trim() && !photoFile && !audioFile && !lockedTelemetry) {
+      setError("Provide field notes, attach evidence, or lock telemetry data.");
+      return;
+    }
+
     setError(null);
+    setIsSubmitting(true);
 
     try {
+      const formData = new FormData();
+      formData.append("content", newPostContent);
+
+      if (photoFile) {
+        formData.append("photo", photoFile);
+      }
+      if (audioFile) {
+        formData.append("audio", audioFile);
+      }
+      if (lockedTelemetry) {
+        formData.append("telemetry", JSON.stringify(lockedTelemetry));
+      }
+
       const res = await fetch("/api/social/posts", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ content: newPostContent }),
+        body: formData,
       });
 
-      if (!res.ok) throw new Error("Failed to publish post");
+      if (!res.ok) throw new Error("Failed to log investigation entry");
 
       setNewPostContent("");
-      fetchFeed(); // Refresh the feed to get the new post with author data
+      setPhotoFile(null);
+      setAudioFile(null);
+      setLockedTelemetry(null);
+
+      // Reset file input elements
+      const photoInput = document.getElementById("photoInput") as HTMLInputElement;
+      const audioInput = document.getElementById("audioInput") as HTMLInputElement;
+      if (photoInput) photoInput.value = "";
+      if (audioInput) audioInput.value = "";
+
+      fetchFeed();
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -95,20 +181,26 @@ export default function Feed() {
         body: JSON.stringify({ content }),
       });
 
-      if (!res.ok) throw new Error("Failed to publish comment");
+      if (!res.ok) throw new Error("Failed to publish commentary");
 
-      // Clear the specific comment box input
       setCommentInputs((prev) => ({ ...prev, [postId]: "" }));
-      fetchFeed(); // Refresh the feed to pull in the new comment
+      fetchFeed();
     } catch (err: any) {
       setError(err.message);
     }
   };
 
   return (
-    <div>
-      <h2 style={{ borderBottom: "1px solid #333", paddingBottom: "1rem", margin: 0 }}>
-        Global Feed
+    <div style={{ fontFamily: "monospace", color: "#e2e8f0" }}>
+      <h2
+        style={{
+          borderBottom: "1px solid #333",
+          paddingBottom: "1rem",
+          margin: 0,
+          color: "#00ffcc",
+        }}
+      >
+        INVESTIGATION FEED & TELEMETRY LOG
       </h2>
 
       {error && (
@@ -124,101 +216,362 @@ export default function Feed() {
         </p>
       )}
 
-      {/* CREATE POST BOX */}
+      {/* CREATE INVESTIGATION LOG FORM */}
       <form
         onSubmit={handleCreatePost}
         style={{
           display: "flex",
           flexDirection: "column",
-          gap: "10px",
+          gap: "15px",
           marginTop: "2rem",
-          padding: "1rem",
-          backgroundColor: "#0f0f0f",
-          border: "1px solid #333",
+          padding: "1.5rem",
+          backgroundColor: "#0c0c10",
+          border: "1px solid #2a2a35",
         }}
       >
+        <span style={{ color: "#00ffcc", fontWeight: "bold" }}>TRANSMIT ANOMALY LOG</span>
+
         <textarea
-          placeholder="Transmit a message to the network..."
+          placeholder="Document anomaly details, session location, observed activity..."
           value={newPostContent}
           onChange={(e) => setNewPostContent(e.target.value)}
           rows={3}
           style={{
             width: "100%",
             padding: "10px",
-            background: "#1a1a1a",
-            color: "#00ffcc",
+            background: "#15151c",
+            color: "#e2e8f0",
             border: "1px solid #333",
             fontFamily: "monospace",
             resize: "vertical",
+            boxSizing: "border-box",
           }}
         />
-        <button
-          type="submit"
+
+        {/* EVIDENCE ATTACHMENT SECTION */}
+        <div
           style={{
-            alignSelf: "flex-end",
-            padding: "8px 16px",
-            background: "#00ffcc",
-            color: "#000",
-            cursor: "pointer",
-            border: "none",
-            fontWeight: "bold",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gap: "15px",
           }}
         >
-          PUBLISH
+          <div>
+            <label
+              style={{
+                display: "block",
+                marginBottom: "5px",
+                fontSize: "0.85em",
+                color: "#94a3b8",
+              }}
+            >
+              PHOTO / SPECTROGRAM EVIDENCE:
+            </label>
+            <input
+              id="photoInput"
+              type="file"
+              accept="image/*"
+              onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
+              style={{ fontSize: "0.85em", color: "#888" }}
+            />
+          </div>
+
+          <div>
+            <label
+              style={{
+                display: "block",
+                marginBottom: "5px",
+                fontSize: "0.85em",
+                color: "#94a3b8",
+              }}
+            >
+              EVP / AUDIO CAPTURE:
+            </label>
+            <input
+              id="audioInput"
+              type="file"
+              accept="audio/*"
+              onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
+              style={{ fontSize: "0.85em", color: "#888" }}
+            />
+          </div>
+        </div>
+
+        {/* HARDWARE TELEMETRY SNAPSHOT CONTROLS */}
+        <div style={{ padding: "10px", border: "1px dashed #333", backgroundColor: "#111116" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: "0.9em", color: "#94a3b8" }}>HARDWARE TELEMETRY LOCK:</span>
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (liveTelemetry) {
+                    setLockedTelemetry(liveTelemetry);
+                  } else {
+                    setError("No live hardware telemetry detected on Port 8081 to lock.");
+                  }
+                }}
+                style={{
+                  padding: "6px 12px",
+                  background: lockedTelemetry ? "#00ffcc" : "#222",
+                  color: lockedTelemetry ? "#000" : "#00ffcc",
+                  border: "1px solid #00ffcc",
+                  cursor: "pointer",
+                  fontWeight: "bold",
+                  fontSize: "0.8em",
+                }}
+              >
+                {lockedTelemetry ? "LOCKED TO LOG" : "CAPTURE LIVE SENSOR FRAME"}
+              </button>
+
+              {lockedTelemetry && (
+                <button
+                  type="button"
+                  onClick={() => setLockedTelemetry(null)}
+                  style={{
+                    padding: "6px 12px",
+                    background: "#ff3333",
+                    color: "#fff",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: "0.8em",
+                  }}
+                >
+                  DISCARD
+                </button>
+              )}
+            </div>
+          </div>
+
+          {lockedTelemetry && (
+            <div style={{ marginTop: "8px", fontSize: "0.85em", color: "#00ffcc" }}>
+              Locked frame from Mode: {MODES[lockedTelemetry.system.active_mode] || "CUSTOM"} |
+              Temp: {lockedTelemetry.sensors.environment.temp_c.toFixed(1)}°C | Impact:{" "}
+              {lockedTelemetry.sensors.mpu6050.peak_g.toFixed(3)}G | REM:{" "}
+              {lockedTelemetry.sensors.mpr121.capacitance}
+            </div>
+          )}
+        </div>
+
+        <button
+          type="submit"
+          disabled={isSubmitting}
+          style={{
+            alignSelf: "flex-end",
+            padding: "10px 24px",
+            background: isSubmitting ? "#555" : "#00ffcc",
+            color: "#000",
+            cursor: isSubmitting ? "not-allowed" : "pointer",
+            border: "none",
+            fontWeight: "bold",
+            letterSpacing: "1px",
+          }}
+        >
+          {isSubmitting ? "TRANSMITTING EVIDENCE..." : "LOG INCIDENT"}
         </button>
       </form>
 
-      {/* FEED TIMELINE */}
-      <div style={{ marginTop: "2rem", display: "flex", flexDirection: "column", gap: "2rem" }}>
+      {/* FEED LIST */}
+      <div style={{ marginTop: "2.5rem", display: "flex", flexDirection: "column", gap: "2rem" }}>
         {posts.length === 0 ? (
-          <p style={{ color: "#888" }}>No transmissions detected on the network.</p>
+          <p style={{ color: "#888" }}>No anomaly records found in local database.</p>
         ) : (
           posts.map((post) => (
             <div
               key={post.id}
-              style={{ border: "1px solid #00ffcc", padding: "1rem", backgroundColor: "#0a0a0a" }}
+              style={{
+                border: "1px solid #2a2a35",
+                padding: "1.5rem",
+                backgroundColor: "#0c0c12",
+              }}
             >
               {/* POST HEADER */}
               <div
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
-                  borderBottom: "1px dotted #333",
+                  borderBottom: "1px solid #222",
                   paddingBottom: "0.5rem",
                   marginBottom: "1rem",
                   fontSize: "0.85em",
                   color: "#888",
                 }}
               >
-                <span style={{ color: "#00ffcc", fontWeight: "bold" }}>{post.author.email}</span>
+                <span style={{ color: "#00ffcc", fontWeight: "bold" }}>
+                  OPERATOR: {post.author.email}
+                </span>
                 <span>{new Date(post.createdAt).toLocaleString()}</span>
               </div>
 
               {/* POST CONTENT */}
-              <p style={{ margin: "0 0 1.5rem 0", whiteSpace: "pre-wrap", lineHeight: "1.5" }}>
-                {post.content}
-              </p>
+              {post.content && (
+                <p
+                  style={{
+                    margin: "0 0 1rem 0",
+                    whiteSpace: "pre-wrap",
+                    lineHeight: "1.5",
+                    color: "#f1f5f9",
+                  }}
+                >
+                  {post.content}
+                </p>
+              )}
 
-              {/* COMMENTS SECTION */}
+              {/* PHOTO EVIDENCE ATTACHMENT */}
+              {post.imageUrl && (
+                <div
+                  style={{
+                    marginBottom: "1.5rem",
+                    border: "1px solid #333",
+                    background: "#000",
+                    padding: "5px",
+                  }}
+                >
+                  <img
+                    src={post.imageUrl}
+                    alt="Investigation Visual Evidence"
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: "500px",
+                      display: "block",
+                      margin: "0 auto",
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* AUDIO EVP ATTACHMENT */}
+              {post.audioUrl && (
+                <div
+                  style={{
+                    marginBottom: "1.5rem",
+                    padding: "10px",
+                    background: "#15151c",
+                    border: "1px solid #333",
+                  }}
+                >
+                  <div style={{ fontSize: "0.85em", color: "#94a3b8", marginBottom: "6px" }}>
+                    AUDIO / EVP RECORDING:
+                  </div>
+                  <audio controls style={{ width: "100%" }}>
+                    <source src={post.audioUrl} />
+                    Your browser does not support audio element playback.
+                  </audio>
+                </div>
+              )}
+
+              {/* EMBEDDED TELEMETRY EVIDENCE BADGE */}
+              {post.telemetry && (
+                <div
+                  style={{
+                    marginBottom: "1.5rem",
+                    border: "1px solid #00ffcc",
+                    padding: "1rem",
+                    backgroundColor: "#111116",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      borderBottom: "1px solid #333",
+                      paddingBottom: "4px",
+                      marginBottom: "8px",
+                      fontSize: "0.85em",
+                    }}
+                  >
+                    <span style={{ color: "#00ffcc", fontWeight: "bold" }}>
+                      SYNCHRONIZED HARDWARE TELEMETRY
+                    </span>
+                    <span style={{ color: "#b48ead" }}>
+                      MODE: {MODES[post.telemetry.system.active_mode] || "FIELD UNIT"}
+                    </span>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                      gap: "10px",
+                      fontSize: "0.85em",
+                    }}
+                  >
+                    <div>
+                      <span style={{ color: "#888" }}>Ambient Temp: </span>
+                      <span style={{ color: "#fff", fontWeight: "bold" }}>
+                        {post.telemetry.sensors.environment.temp_c.toFixed(1)} °C
+                      </span>
+                    </div>
+
+                    <div>
+                      <span style={{ color: "#888" }}>Pressure: </span>
+                      <span style={{ color: "#fff" }}>
+                        {post.telemetry.sensors.environment.pressure_hpa.toFixed(1)} hPa
+                      </span>
+                    </div>
+
+                    <div>
+                      <span style={{ color: "#888" }}>REM Capacitance: </span>
+                      <span style={{ color: "#00ffcc", fontWeight: "bold" }}>
+                        {post.telemetry.sensors.mpr121.capacitance}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span style={{ color: "#888" }}>Kinetic Shock: </span>
+                      <span
+                        style={{
+                          color:
+                            post.telemetry.sensors.mpu6050.peak_g >
+                            post.telemetry.system.geo_threshold_g
+                              ? "#ff3333"
+                              : "#fff",
+                          fontWeight: "bold",
+                        }}
+                      >
+                        {post.telemetry.sensors.mpu6050.peak_g.toFixed(3)} G
+                      </span>
+                    </div>
+
+                    <div>
+                      <span style={{ color: "#888" }}>RF Frequency: </span>
+                      <span style={{ color: "#fff" }}>
+                        {post.telemetry.radio.frequency.toFixed(1)} FM
+                      </span>
+                    </div>
+
+                    <div>
+                      <span style={{ color: "#888" }}>Vector (X,Y,Z): </span>
+                      <span style={{ color: "#aaa" }}>
+                        {post.telemetry.sensors.mpu6050.accel.x.toFixed(1)},{" "}
+                        {post.telemetry.sensors.mpu6050.accel.y.toFixed(1)},{" "}
+                        {post.telemetry.sensors.mpu6050.accel.z.toFixed(1)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* COMMENTS LOG SECTION */}
               <div
-                style={{ marginLeft: "1rem", paddingLeft: "1rem", borderLeft: "2px solid #333" }}
+                style={{ marginLeft: "1rem", paddingLeft: "1rem", borderLeft: "2px solid #222" }}
               >
                 {post.comments.length > 0 && (
                   <div
                     style={{
                       display: "flex",
                       flexDirection: "column",
-                      gap: "1rem",
+                      gap: "0.8rem",
                       marginBottom: "1rem",
                     }}
                   >
                     {post.comments.map((comment) => (
-                      <div key={comment.id} style={{ fontSize: "0.9em" }}>
+                      <div key={comment.id} style={{ fontSize: "0.85em" }}>
                         <span style={{ color: "#00ffcc", fontWeight: "bold", marginRight: "8px" }}>
                           {comment.author.email}:
                         </span>
                         <span style={{ color: "#ccc" }}>{comment.content}</span>
-                        <div style={{ fontSize: "0.8em", color: "#666", marginTop: "4px" }}>
+                        <div style={{ fontSize: "0.75em", color: "#666", marginTop: "2px" }}>
                           {new Date(comment.createdAt).toLocaleString()}
                         </div>
                       </div>
@@ -226,14 +579,13 @@ export default function Feed() {
                   </div>
                 )}
 
-                {/* CREATE COMMENT BOX */}
                 <form
                   onSubmit={(e) => handleCreateComment(post.id, e)}
                   style={{ display: "flex", gap: "10px" }}
                 >
                   <input
                     type="text"
-                    placeholder="Append a comment..."
+                    placeholder="Contribute case note or correlation analysis..."
                     value={commentInputs[post.id] || ""}
                     onChange={(e) =>
                       setCommentInputs((prev) => ({ ...prev, [post.id]: e.target.value }))
@@ -241,7 +593,7 @@ export default function Feed() {
                     style={{
                       flexGrow: 1,
                       padding: "8px",
-                      background: "#0f0f0f",
+                      background: "#15151c",
                       color: "#00ffcc",
                       border: "1px solid #333",
                       fontFamily: "monospace",
@@ -251,13 +603,13 @@ export default function Feed() {
                     type="submit"
                     style={{
                       padding: "8px 16px",
-                      background: "#333",
+                      background: "#222",
                       color: "#00ffcc",
                       cursor: "pointer",
-                      border: "1px solid #555",
+                      border: "1px solid #444",
                     }}
                   >
-                    REPLY
+                    ADD NOTE
                   </button>
                 </form>
               </div>

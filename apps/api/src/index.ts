@@ -16,10 +16,8 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// Create the unified HTTP server for Express and Socket.IO
 const httpServer = http.createServer(app);
 
-// Initialize Socket.IO with permissive CORS for local development
 const io = new SocketIOServer(httpServer, {
   cors: {
     origin: "*",
@@ -30,6 +28,10 @@ const io = new SocketIOServer(httpServer, {
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json());
+
+// Expose uploaded media files for browser playback and image rendering
+const uploadsPath = path.join(process.cwd(), "uploads");
+app.use("/uploads", express.static(uploadsPath));
 
 const apiRouter = express.Router();
 
@@ -50,7 +52,7 @@ app.get(/.*$/, (req, res) => {
   res.sendFile(path.join(frontendDistPath, "index.html"));
 });
 
-// Socket.IO connection handling for browser clients
+// Socket.IO event handling
 io.on("connection", (socket) => {
   console.log(`[Socket.IO] React client connected: ${socket.id}`);
 
@@ -59,7 +61,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// TCP Server for ESP32 Hardware Ingestion
+// TCP Ingestion Engine for ESP32 Nodes
 const TCP_PORT = 8081;
 const tcpServer = net.createServer((socket) => {
   console.log(`[TCP] ESP32 node connected: ${socket.remoteAddress}:${socket.remotePort}`);
@@ -69,7 +71,6 @@ const tcpServer = net.createServer((socket) => {
     buffer += chunk.toString();
     const parts = buffer.split("\n");
 
-    // Retain the trailing piece; if the chunk ended in '\n', parts.pop() will be empty string
     buffer = parts.pop() || "";
 
     for (const part of parts) {
@@ -77,7 +78,6 @@ const tcpServer = net.createServer((socket) => {
       if (trimmed !== "") {
         try {
           const sensorData = JSON.parse(trimmed);
-          // Broadcast parsed telemetry immediately to all connected browsers
           io.emit("sensor_update", sensorData);
         } catch (err) {
           console.error("[TCP] Malformed JSON received from hardware node:", trimmed);

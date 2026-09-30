@@ -3,22 +3,48 @@ import { prisma } from "../db.js";
 
 export const createPost = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { content } = req.body;
+    const { content, telemetry } = req.body;
     const authorId = (req as any).user.userId;
 
-    if (!content) {
-      res.status(400).json({ error: "Post content cannot be empty" });
+    if (!content && !req.files) {
+      res
+        .status(400)
+        .json({ error: "Post must contain either a transmission log or attached media." });
       return;
+    }
+
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+    const photoFile = files?.photo?.[0];
+    const audioFile = files?.audio?.[0];
+
+    const imageUrl = photoFile ? `/uploads/${photoFile.filename}` : null;
+    const audioUrl = audioFile ? `/uploads/${audioFile.filename}` : null;
+
+    let parsedTelemetry: any = null;
+    if (telemetry) {
+      try {
+        parsedTelemetry = typeof telemetry === "string" ? JSON.parse(telemetry) : telemetry;
+      } catch (parseErr) {
+        console.error("Failed to parse telemetry JSON:", parseErr);
+      }
     }
 
     const newPost = await prisma.post.create({
       data: {
-        content,
+        content: content || "",
+        imageUrl,
+        audioUrl,
+        telemetry: parsedTelemetry,
         authorId,
       },
       include: {
         author: {
           select: { email: true },
+        },
+        comments: {
+          include: {
+            author: { select: { email: true } },
+          },
         },
       },
     });
@@ -59,7 +85,6 @@ export const getFeed = async (req: Request, res: Response): Promise<void> => {
 export const createComment = async (req: Request, res: Response): Promise<void> => {
   try {
     const postId = req.params.postId as string;
-
     const { content } = req.body;
     const authorId = (req as any).user.userId;
 
@@ -108,6 +133,9 @@ export const getProfile = async (req: Request, res: Response): Promise<void> => 
           select: {
             id: true,
             content: true,
+            imageUrl: true,
+            audioUrl: true,
+            telemetry: true,
             createdAt: true,
           },
         },
