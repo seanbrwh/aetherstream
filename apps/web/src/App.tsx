@@ -1,35 +1,59 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "./context/AuthContext";
-import ProtectedRoute from "./components/ProtectedRoute";
+import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ThemeProvider } from "./context/ThemeContext";
 import Layout from "./components/Layout";
-
-// Pages
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Feed from "./pages/Feed";
 import Profile from "./pages/Profile";
 
+const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
+  const { token } = useAuth();
+  if (!token) {
+    return <Navigate to="/auth" replace />;
+  }
+  return <>{children}</>;
+};
+
+const router = createBrowserRouter([
+  {
+    path: "/auth",
+    element: <Auth />,
+  },
+  {
+    path: "/",
+    element: (
+      <ProtectedRoute>
+        <Layout />
+      </ProtectedRoute>
+    ),
+    children: [
+      {
+        index: true,
+        element: <Dashboard />,
+      },
+      {
+        path: "feed",
+        element: <Feed />,
+      },
+      {
+        path: "profile",
+        element: <Profile />,
+      },
+    ],
+  },
+  {
+    path: "*",
+    element: <Navigate to="/" replace />,
+  },
+]);
+
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        {/* The background color is now handled by Layout.tsx and Auth.tsx */}
-        <Routes>
-          {/* Public Route */}
-          <Route path="/login" element={<Auth />} />
-
-          {/* Protected Routes (Require JWT) */}
-          <Route element={<ProtectedRoute />}>
-            {/* Layout Wrapper (Provides Navbar) */}
-            <Route element={<Layout />}>
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/feed" element={<Feed />} />
-              <Route path="/profile" element={<Profile />} />
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            </Route>
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

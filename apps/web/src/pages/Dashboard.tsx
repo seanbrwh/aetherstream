@@ -43,10 +43,10 @@ interface TelemetryPayload {
 }
 
 const MODES: Record<number, string> = {
-  1: "SPIRIT BOX",
-  2: "REM POD",
-  3: "GEOPHONE",
-  4: "ALICE BOX",
+  1: "RF Sweep (Spirit Box)",
+  2: "Proximity (REM-Pod)",
+  3: "Seismic (Geophone)",
+  4: "Dictionary ITC (Alice)",
 };
 
 export default function Dashboard() {
@@ -54,21 +54,15 @@ export default function Dashboard() {
   const [connected, setConnected] = useState<boolean>(false);
 
   useEffect(() => {
-    // Connect to the API server depending on whether running in Vite dev or production
-    const socketUrl = window.location.port === "5173" ? "http://localhost:3030" : "/";
+    // Dynamically target the host IP rather than hardcoded localhost
+    const socketUrl =
+      window.location.port === "5173" ? `http://${window.location.hostname}:3030` : "/";
+
     const socket = io(socketUrl);
 
-    socket.on("connect", () => {
-      setConnected(true);
-    });
-
-    socket.on("disconnect", () => {
-      setConnected(false);
-    });
-
-    socket.on("sensor_update", (payload: TelemetryPayload) => {
-      setData(payload);
-    });
+    socket.on("connect", () => setConnected(true));
+    socket.on("disconnect", () => setConnected(false));
+    socket.on("sensor_update", (payload: TelemetryPayload) => setData(payload));
 
     return () => {
       socket.disconnect();
@@ -77,16 +71,13 @@ export default function Dashboard() {
 
   if (!data) {
     return (
-      <div style={styles.loading}>
-        <h2>
-          {connected
-            ? "Awaiting AetherStream Hardware Telemetry..."
-            : "Connecting to AetherStream Socket Bridge..."}
-        </h2>
-        <div style={styles.spinner}></div>
-        <p style={{ marginTop: "1rem", color: "#666", fontSize: "0.9rem" }}>
-          TCP Ingestion Active on Port 8081. Transmit JSON payload from ESP32 node to initiate
-          telemetry link.
+      <div style={dashStyles.emptyState}>
+        <div style={dashStyles.spinner} />
+        <h3 style={{ margin: "1rem 0 0.25rem 0", fontWeight: 600 }}>
+          {connected ? "Awaiting Telemetry Packet" : "Connecting to Hardware Bridge"}
+        </h3>
+        <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: 0 }}>
+          Listening on TCP Port 8081 for incoming ESP32 transmissions
         </p>
       </div>
     );
@@ -95,221 +86,336 @@ export default function Dashboard() {
   const { system, radio, sensors } = data;
   const { environment, mpr121, mpu6050 } = sensors;
 
+  const isColdDrop = environment.temp_c < 24.5;
   const isKineticAlert = mpu6050.peak_g > system.geo_threshold_g;
-  const isThermalAlert = environment.temp_c < 24.5;
+  const isRemActive = mpr121.capacitance > 120;
 
   return (
-    <div style={styles.container}>
-      <header style={styles.topBar}>
+    <div style={dashStyles.container}>
+      {/* HEADER SECTION */}
+      <div style={dashStyles.header}>
         <div>
-          <h1 style={styles.title}>AETHER OS TELEMETRY</h1>
-          <span style={connected ? styles.statusOnline : styles.statusOffline}>
-            {connected ? "● LIVE STREAM" : "○ OFFLINE"}
-          </span>
-        </div>
-        <div style={styles.activeMode}>
-          MODE: <span style={styles.highlight}>{MODES[system.active_mode] || "UNKNOWN"}</span>
-        </div>
-      </header>
-
-      <div style={styles.grid}>
-        {/* Environmental Card */}
-        <div
-          style={{
-            ...styles.card,
-            ...(isThermalAlert ? styles.cardAlert : {}),
-          }}
-        >
-          <h3 style={styles.cardHeader}>ENVIRONMENTAL (BME280)</h3>
-          <div style={styles.dataRow}>
-            <span>Temperature</span>
-            <span style={styles.value}>{environment.temp_c.toFixed(1)} °C</span>
-          </div>
-          <div style={styles.dataRow}>
-            <span>Humidity</span>
-            <span style={styles.value}>{environment.humidity_pct.toFixed(1)} %</span>
-          </div>
-          <div style={styles.dataRow}>
-            <span>Pressure</span>
-            <span style={styles.value}>{environment.pressure_hpa.toFixed(1)} hPa</span>
+          <h2 style={dashStyles.pageTitle}>Sensor Telemetry</h2>
+          <div style={dashStyles.pageSubtitle}>
+            Live hardware readings from field instrumentation
           </div>
         </div>
 
-        {/* Electromagnetic Card */}
-        <div style={styles.card}>
-          <h3 style={styles.cardHeader}>ELECTROMAGNETIC (MPR121)</h3>
-          <div style={styles.dataRow}>
-            <span>Capacitance Level</span>
-            <span style={styles.value}>{mpr121.capacitance}</span>
+        <div style={dashStyles.headerBadges}>
+          <div style={dashStyles.badge}>
+            <span style={{ color: "var(--text-muted)" }}>Mode:</span>
+            <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+              {MODES[system.active_mode] || "Multi-Sensor"}
+            </span>
           </div>
-          <div style={styles.dataRow}>
-            <span>Sensitivity Lvl</span>
-            <span style={styles.value}>{system.rem_sensitivity_lvl} / 5</span>
-          </div>
-          <div style={styles.dataRow}>
-            <span>Pad Mask (Hex)</span>
-            <span style={styles.value}>0x{mpr121.pad_mask.toString(16).toUpperCase()}</span>
+
+          <div style={dashStyles.badge}>
+            <span style={{ color: "var(--text-muted)" }}>Status:</span>
+            <span style={{ fontWeight: 600, color: "var(--accent-emerald)" }}>Connected</span>
           </div>
         </div>
+      </div>
 
-        {/* Kinematics Card */}
-        <div
-          style={{
-            ...styles.card,
-            ...(isKineticAlert ? styles.cardAlert : {}),
-          }}
-        >
-          <h3 style={styles.cardHeader}>KINEMATICS (MPU6050)</h3>
-          <div style={styles.dataRow}>
-            <span>Peak Impact</span>
+      {/* METRIC GRID */}
+      <div style={dashStyles.grid}>
+        {/* CARD 1: ENVIRONMENTAL (BME280) */}
+        <div style={dashStyles.card}>
+          <div style={dashStyles.cardHeader}>
+            <span style={dashStyles.cardTitle}>Atmospheric Environment</span>
+            <span style={dashStyles.sensorChip}>BME280</span>
+          </div>
+
+          <div style={dashStyles.metricHero}>
             <span
               style={{
-                ...styles.value,
-                ...(isKineticAlert ? styles.textAlert : {}),
+                fontSize: "2rem",
+                fontWeight: 700,
+                fontFamily: "monospace",
+                color: isColdDrop ? "var(--accent-cyan)" : "var(--text-primary)",
+              }}
+            >
+              {environment.temp_c.toFixed(1)}°C
+            </span>
+            <span style={dashStyles.metricLabel}>Ambient Temperature</span>
+          </div>
+
+          <div style={dashStyles.dataRows}>
+            <div style={dashStyles.row}>
+              <span style={dashStyles.rowLabel}>Barometric Pressure</span>
+              <span style={dashStyles.rowVal}>{environment.pressure_hpa.toFixed(1)} hPa</span>
+            </div>
+            <div style={dashStyles.row}>
+              <span style={dashStyles.rowLabel}>Relative Humidity</span>
+              <span style={dashStyles.rowVal}>{environment.humidity_pct.toFixed(1)}%</span>
+            </div>
+          </div>
+
+          <div
+            style={{
+              ...dashStyles.cardFooter,
+              color: isColdDrop ? "var(--accent-cyan)" : "var(--text-muted)",
+            }}
+          >
+            {isColdDrop ? "Rapid ambient thermal drop observed" : "Atmospheric conditions stable"}
+          </div>
+        </div>
+
+        {/* CARD 2: CAPACITIVE PROXIMITY (MPR121) */}
+        <div style={dashStyles.card}>
+          <div style={dashStyles.cardHeader}>
+            <span style={dashStyles.cardTitle}>Capacitive Proximity</span>
+            <span style={dashStyles.sensorChip}>MPR121</span>
+          </div>
+
+          <div style={dashStyles.metricHero}>
+            <span
+              style={{
+                fontSize: "2rem",
+                fontWeight: 700,
+                fontFamily: "monospace",
+                color: isRemActive ? "var(--accent-amber)" : "var(--text-primary)",
+              }}
+            >
+              {mpr121.capacitance}
+            </span>
+            <span style={dashStyles.metricLabel}>Signal Level</span>
+          </div>
+
+          <div style={dashStyles.dataRows}>
+            <div style={dashStyles.row}>
+              <span style={dashStyles.rowLabel}>Sensitivity Level</span>
+              <span style={dashStyles.rowVal}>{system.rem_sensitivity_lvl} of 5</span>
+            </div>
+            <div style={dashStyles.row}>
+              <span style={dashStyles.rowLabel}>Electrode Pad Mask</span>
+              <span style={dashStyles.rowVal}>0x{mpr121.pad_mask.toString(16).toUpperCase()}</span>
+            </div>
+          </div>
+
+          <div
+            style={{
+              ...dashStyles.cardFooter,
+              color: isRemActive ? "var(--accent-amber)" : "var(--text-muted)",
+            }}
+          >
+            {isRemActive ? "Proximity field threshold exceeded" : "No field disturbance registered"}
+          </div>
+        </div>
+
+        {/* CARD 3: KINEMATICS & VIBRATION (MPU6050) */}
+        <div style={dashStyles.card}>
+          <div style={dashStyles.cardHeader}>
+            <span style={dashStyles.cardTitle}>Kinematics & Surface Impact</span>
+            <span style={dashStyles.sensorChip}>MPU6050</span>
+          </div>
+
+          <div style={dashStyles.metricHero}>
+            <span
+              style={{
+                fontSize: "2rem",
+                fontWeight: 700,
+                fontFamily: "monospace",
+                color: isKineticAlert ? "var(--accent-rose)" : "var(--text-primary)",
               }}
             >
               {mpu6050.peak_g.toFixed(3)} G
             </span>
+            <span style={dashStyles.metricLabel}>Peak Impact Force</span>
           </div>
-          <div style={styles.dataRow}>
-            <span>Threshold</span>
-            <span style={styles.value}>{system.geo_threshold_g.toFixed(2)} G</span>
+
+          <div style={dashStyles.dataRows}>
+            <div style={dashStyles.row}>
+              <span style={dashStyles.rowLabel}>Alarm Threshold</span>
+              <span style={dashStyles.rowVal}>{system.geo_threshold_g.toFixed(2)} G</span>
+            </div>
+            <div style={dashStyles.row}>
+              <span style={dashStyles.rowLabel}>Vector Coordinates</span>
+              <span style={dashStyles.rowVal}>
+                {mpu6050.accel.x.toFixed(1)}, {mpu6050.accel.y.toFixed(1)},{" "}
+                {mpu6050.accel.z.toFixed(1)}
+              </span>
+            </div>
           </div>
-          <div style={styles.dataRow}>
-            <span>Raw Accel (X,Y,Z)</span>
-            <span style={styles.subValue}>
-              {mpu6050.accel.x.toFixed(2)}, {mpu6050.accel.y.toFixed(2)},{" "}
-              {mpu6050.accel.z.toFixed(2)}
-            </span>
+
+          <div
+            style={{
+              ...dashStyles.cardFooter,
+              color: isKineticAlert ? "var(--accent-rose)" : "var(--text-muted)",
+            }}
+          >
+            {isKineticAlert ? "Vibrational baseline breach registered" : "Surface vibration quiet"}
           </div>
         </div>
 
-        {/* Radio & System Card */}
-        <div style={styles.card}>
-          <h3 style={styles.cardHeader}>RADIO FREQUENCY & SYSTEM</h3>
-          <div style={styles.dataRow}>
-            <span>Current Channel</span>
-            <span style={styles.value}>{radio.frequency.toFixed(1)} FM</span>
+        {/* CARD 4: RF AUDIO SWEEP */}
+        <div style={dashStyles.card}>
+          <div style={dashStyles.cardHeader}>
+            <span style={dashStyles.cardTitle}>Acoustic RF Sweep</span>
+            <span style={dashStyles.sensorChip}>TEA5767</span>
           </div>
-          <div style={styles.dataRow}>
-            <span>Scan Rate</span>
-            <span style={styles.value}>Dynamic</span>
+
+          <div style={dashStyles.metricHero}>
+            <span
+              style={{
+                fontSize: "2rem",
+                fontWeight: 700,
+                fontFamily: "monospace",
+                color: "var(--accent-primary)",
+              }}
+            >
+              {radio.frequency.toFixed(1)} MHz
+            </span>
+            <span style={dashStyles.metricLabel}>Current FM Carrier</span>
           </div>
-          <div style={styles.dataRow}>
-            <span>Last Telemetry Sync</span>
-            <span style={styles.subValue}>{new Date(data.timestamp).toLocaleTimeString()}</span>
+
+          <div style={dashStyles.dataRows}>
+            <div style={dashStyles.row}>
+              <span style={dashStyles.rowLabel}>Scan Mode</span>
+              <span style={dashStyles.rowVal}>Forward Step (100ms)</span>
+            </div>
+            <div style={dashStyles.row}>
+              <span style={dashStyles.rowLabel}>Last Synchronization</span>
+              <span style={dashStyles.rowVal}>{new Date(data.timestamp).toLocaleTimeString()}</span>
+            </div>
           </div>
+
+          <div style={dashStyles.cardFooter}>Radio receiver sweeping carrier frequencies</div>
         </div>
       </div>
     </div>
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const dashStyles: Record<string, React.CSSProperties> = {
   container: {
-    backgroundColor: "#0a0a0c",
-    color: "#e2e8f0",
-    minHeight: "80vh",
-    padding: "1rem",
-    fontFamily: "'Courier New', Courier, monospace",
+    display: "flex",
+    flexDirection: "column",
+    gap: "1.25rem",
+    width: "100%",
   },
-  loading: {
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+    gap: "12px",
+    borderBottom: "1px solid var(--border-default)",
+    paddingBottom: "1rem",
+  },
+  pageTitle: {
+    fontSize: "1.4rem",
+    fontWeight: 700,
+    margin: 0,
+    letterSpacing: "-0.3px",
+  },
+  pageSubtitle: {
+    fontSize: "0.85rem",
+    color: "var(--text-muted)",
+    marginTop: "2px",
+  },
+  headerBadges: {
+    display: "flex",
+    gap: "8px",
+    flexWrap: "wrap",
+  },
+  badge: {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    background: "var(--bg-surface)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "6px",
+    padding: "6px 10px",
+    fontSize: "0.8rem",
+  },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))",
+    gap: "1rem",
+    width: "100%",
+  },
+  card: {
+    backgroundColor: "var(--bg-surface)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "8px",
+    padding: "1.25rem",
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+    boxShadow: "var(--card-shadow)",
+  },
+  cardHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  cardTitle: {
+    fontSize: "0.85rem",
+    fontWeight: 600,
+    color: "var(--text-primary)",
+  },
+  sensorChip: {
+    fontSize: "0.7rem",
+    fontWeight: 600,
+    padding: "2px 6px",
+    borderRadius: "4px",
+    backgroundColor: "var(--bg-surface-elevated)",
+    color: "var(--text-secondary)",
+    border: "1px solid var(--border-default)",
+    fontFamily: "monospace",
+  },
+  metricHero: {
+    display: "flex",
+    flexDirection: "column",
+    margin: "0.25rem 0",
+  },
+  metricLabel: {
+    fontSize: "0.75rem",
+    color: "var(--text-muted)",
+    marginTop: "2px",
+  },
+  dataRows: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+    borderTop: "1px solid var(--border-subtle)",
+    paddingTop: "8px",
+  },
+  row: {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: "0.8rem",
+  },
+  rowLabel: {
+    color: "var(--text-secondary)",
+  },
+  rowVal: {
+    fontWeight: 600,
+    fontFamily: "monospace",
+  },
+  cardFooter: {
+    fontSize: "0.75rem",
+    marginTop: "auto",
+    paddingTop: "6px",
+    borderTop: "1px solid var(--border-subtle)",
+  },
+  emptyState: {
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    minHeight: "60vh",
-    backgroundColor: "#0a0a0c",
-    color: "#00ffcc",
-    fontFamily: "'Courier New', Courier, monospace",
+    padding: "4rem 1.5rem",
     textAlign: "center",
+    backgroundColor: "var(--bg-surface)",
+    border: "1px dashed var(--border-default)",
+    borderRadius: "8px",
   },
   spinner: {
-    marginTop: "20px",
-    width: "40px",
-    height: "40px",
-    border: "4px solid rgba(0, 255, 204, 0.2)",
-    borderTop: "4px solid #00ffcc",
+    width: "32px",
+    height: "32px",
+    border: "3px solid var(--border-default)",
+    borderTop: "3px solid var(--accent-primary)",
     borderRadius: "50%",
-    animation: "spin 1s linear infinite",
-  },
-  topBar: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    borderBottom: "1px solid #333",
-    paddingBottom: "1rem",
-    marginBottom: "2rem",
-  },
-  title: {
-    margin: 0,
-    fontSize: "1.8rem",
-    fontWeight: "bold",
-    letterSpacing: "2px",
-    color: "#ffffff",
-  },
-  statusOnline: {
-    color: "#00ffcc",
-    fontWeight: "bold",
-    fontSize: "0.9rem",
-    textShadow: "0 0 8px rgba(0,255,204,0.5)",
-  },
-  statusOffline: {
-    color: "#ff3333",
-    fontWeight: "bold",
-    fontSize: "0.9rem",
-  },
-  activeMode: {
-    fontSize: "1rem",
-    backgroundColor: "#1a1a24",
-    padding: "8px 16px",
-    borderRadius: "4px",
-    border: "1px solid #444",
-  },
-  highlight: {
-    color: "#b48ead",
-    fontWeight: "bold",
-  },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-    gap: "1.5rem",
-  },
-  card: {
-    backgroundColor: "#111116",
-    border: "1px solid #2a2a35",
-    borderRadius: "6px",
-    padding: "1.5rem",
-  },
-  cardAlert: {
-    border: "1px solid #ff3333",
-    boxShadow: "0 0 15px rgba(255, 51, 51, 0.2)",
-  },
-  cardHeader: {
-    margin: "0 0 1rem 0",
-    color: "#64748b",
-    fontSize: "0.95rem",
-    borderBottom: "1px solid #2a2a35",
-    paddingBottom: "0.5rem",
-  },
-  dataRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: "0.8rem",
-    fontSize: "0.95rem",
-  },
-  value: {
-    fontSize: "1.15rem",
-    fontWeight: "bold",
-    color: "#00ffcc",
-  },
-  subValue: {
-    fontSize: "0.85rem",
-    color: "#94a3b8",
-  },
-  textAlert: {
-    color: "#ff3333",
-    textShadow: "0 0 8px rgba(255,51,51,0.6)",
+    animation: "spin 0.8s linear infinite",
   },
 };

@@ -3,13 +3,13 @@ import { prisma } from "../db.js";
 
 export const createPost = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { content, telemetry } = req.body;
+    const { content, location, telemetry } = req.body;
     const authorId = (req as any).user.userId;
 
-    if (!content && !req.files) {
+    if (!content && !location && !req.files) {
       res
         .status(400)
-        .json({ error: "Post must contain either a transmission log or attached media." });
+        .json({ error: "Post must contain either case notes, location info, or attached media." });
       return;
     }
 
@@ -32,6 +32,7 @@ export const createPost = async (req: Request, res: Response): Promise<void> => 
     const newPost = await prisma.post.create({
       data: {
         content: content || "",
+        location: location || null,
         imageUrl,
         audioUrl,
         telemetry: parsedTelemetry,
@@ -133,6 +134,7 @@ export const getProfile = async (req: Request, res: Response): Promise<void> => 
           select: {
             id: true,
             content: true,
+            location: true,
             imageUrl: true,
             audioUrl: true,
             telemetry: true,
