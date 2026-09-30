@@ -3,6 +3,9 @@ import {
   createPost,
   getFeed,
   createComment,
+  toggleLike,
+  sendDirectMessage,
+  getDirectMessages,
   getProfile,
   updateProfile,
 } from "../controllers/social.controller.js";
@@ -17,5 +20,9 @@ router.put("/profile", authenticateToken, updateProfile);
 
 router.post("/posts", authenticateToken, uploadMedia, createPost);
 router.post("/posts/:postId/comments", authenticateToken, createComment);
+router.post("/posts/:postId/like", authenticateToken, toggleLike);
+
+router.post("/messages", authenticateToken, sendDirectMessage);
+router.get("/messages/:userId", authenticateToken, getDirectMessages);
 
 export default router;

@@ -49,6 +49,9 @@ export const createPost = async (req: Request, res: Response): Promise<void> => 
             avatarUrl: true,
           },
         },
+        likes: {
+          select: { userId: true },
+        },
         comments: {
           include: {
             author: {
@@ -61,10 +64,21 @@ export const createPost = async (req: Request, res: Response): Promise<void> => 
             },
           },
         },
+        _count: {
+          select: {
+            likes: true,
+            comments: true,
+          },
+        },
       },
     });
 
-    res.json(newPost);
+    res.json({
+      ...newPost,
+      likeCount: newPost._count.likes,
+      commentCount: newPost._count.comments,
+      isLiked: false,
+    });
   } catch (error) {
     console.error("Create Post Error:", error);
     res.status(500).json({ error: "Failed to create post" });
@@ -73,6 +87,8 @@ export const createPost = async (req: Request, res: Response): Promise<void> => 
 
 export const getFeed = async (req: Request, res: Response): Promise<void> => {
   try {
+    const currentUserId = (req as any).user.userId;
+
     const posts = await prisma.post.findMany({
       orderBy: { createdAt: "desc" },
       include: {
@@ -85,6 +101,9 @@ export const getFeed = async (req: Request, res: Response): Promise<void> => {
             role: true,
             avatarUrl: true,
           },
+        },
+        likes: {
+          select: { userId: true },
         },
         comments: {
           orderBy: { createdAt: "asc" },
@@ -99,13 +118,60 @@ export const getFeed = async (req: Request, res: Response): Promise<void> => {
             },
           },
         },
+        _count: {
+          select: {
+            likes: true,
+            comments: true,
+          },
+        },
       },
     });
 
-    res.json(posts);
+    const formattedPosts = posts.map((post) => ({
+      ...post,
+      likeCount: post._count.likes,
+      commentCount: post._count.comments,
+      isLiked: post.likes.some((like) => like.userId === currentUserId),
+    }));
+
+    res.json(formattedPosts);
   } catch (error) {
     console.error("Fetch Feed Error:", error);
     res.status(500).json({ error: "Failed to fetch the feed" });
+  }
+};
+
+export const toggleLike = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const postId = req.params.postId as string;
+    const userId = (req as any).user.userId;
+
+    const existingLike = await prisma.like.findUnique({
+      where: {
+        userId_postId: {
+          userId,
+          postId,
+        },
+      },
+    });
+
+    if (existingLike) {
+      await prisma.like.delete({
+        where: { id: existingLike.id },
+      });
+      res.json({ liked: false });
+    } else {
+      await prisma.like.create({
+        data: {
+          userId,
+          postId,
+        },
+      });
+      res.json({ liked: true });
+    }
+  } catch (error) {
+    console.error("Toggle Like Error:", error);
+    res.status(500).json({ error: "Failed to toggle endorsement on post" });
   }
 };
 
@@ -148,6 +214,81 @@ export const createComment = async (req: Request, res: Response): Promise<void> 
   } catch (error) {
     console.error("Create Comment Error:", error);
     res.status(500).json({ error: "Failed to create comment" });
+  }
+};
+
+export const sendDirectMessage = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const senderId = (req as any).user.userId;
+    const { receiverId, content } = req.body;
+
+    if (!receiverId || !content || !content.trim()) {
+      res.status(400).json({ error: "Recipient ID and message content are required." });
+      return;
+    }
+
+    const message = await prisma.message.create({
+      data: {
+        senderId,
+        receiverId,
+        content: content.trim(),
+      },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+          },
+        },
+        receiver: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+          },
+        },
+      },
+    });
+
+    res.status(201).json(message);
+  } catch (error) {
+    console.error("Send Direct Message Error:", error);
+    res.status(500).json({ error: "Failed to transmit direct message" });
+  }
+};
+
+export const getDirectMessages = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const currentUserId = (req as any).user.userId;
+    const targetUserId = req.params.userId as string;
+
+    const messages = await prisma.message.findMany({
+      where: {
+        OR: [
+          { senderId: currentUserId, receiverId: targetUserId },
+          { senderId: targetUserId, receiverId: currentUserId },
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+          },
+        },
+      },
+    });
+
+    res.json(messages);
+  } catch (error) {
+    console.error("Get Direct Messages Error:", error);
+    res.status(500).json({ error: "Failed to fetch direct messages" });
   }
 };
 

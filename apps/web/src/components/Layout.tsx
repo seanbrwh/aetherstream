@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -7,26 +7,7 @@ export default function Layout() {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [sessionSeconds, setSessionSeconds] = useState(0);
   const navigate = useNavigate();
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setSessionSeconds((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formatTimer = (total: number) => {
-    const hrs = Math.floor(total / 3600)
-      .toString()
-      .padStart(2, "0");
-    const mins = Math.floor((total % 3600) / 60)
-      .toString()
-      .padStart(2, "0");
-    const secs = (total % 60).toString().padStart(2, "0");
-    return `${hrs}:${mins}:${secs}`;
-  };
 
   const handleLogout = () => {
     logout();
@@ -62,11 +43,6 @@ export default function Layout() {
         </div>
 
         <div style={layoutStyles.navRight}>
-          <div style={layoutStyles.sessionIndicator}>
-            <span style={layoutStyles.statusDot}>●</span>
-            <span style={layoutStyles.sessionTime}>{formatTimer(sessionSeconds)}</span>
-          </div>
-
           <button onClick={toggleTheme} style={layoutStyles.themeToggle} aria-label="Toggle Theme">
             {theme === "dark" ? "Light Mode" : "Dark Mode"}
           </button>
@@ -92,7 +68,7 @@ export default function Layout() {
               </button>
             </div>
 
-            {/* OPERATOR CARD: SHOWS CALLSIGN & USERNAME ONLY */}
+            {/* OPERATOR CARD */}
             <div style={layoutStyles.operatorInfo}>
               <div style={layoutStyles.operatorLabel}>Active Investigator</div>
               <div style={layoutStyles.operatorIdentity}>{getIdentLabel()}</div>
@@ -220,26 +196,6 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     color: "var(--text-muted)",
     fontWeight: 500,
     display: "none",
-  },
-  sessionIndicator: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    background: "var(--bg-surface-elevated)",
-    border: "1px solid var(--border-default)",
-    borderRadius: "6px",
-    padding: "6px 10px",
-    minHeight: "40px",
-  },
-  statusDot: {
-    color: "var(--accent-emerald)",
-    fontSize: "0.75rem",
-    lineHeight: 1,
-  },
-  sessionTime: {
-    fontFamily: "monospace",
-    fontSize: "0.8rem",
-    fontWeight: 600,
   },
   themeToggle: {
     background: "var(--bg-surface-elevated)",
