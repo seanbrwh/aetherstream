@@ -1,13 +1,74 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { getSocket } from "../lib/socket";
+import MessengerConsole from "./MessengerConsole";
 
 export default function Layout() {
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isMessengerOpen, setIsMessengerOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const isMessengerOpenRef = useRef(isMessengerOpen);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    isMessengerOpenRef.current = isMessengerOpen;
+  }, [isMessengerOpen]);
+
+  // Persistent Socket Room Assignment
+  useEffect(() => {
+    if (!user?.id || !token) return;
+
+    const socket = getSocket();
+
+    const joinRoom = () => {
+      console.log("[Layout] Registering investigator room:", user.id);
+      socket.emit("join_user", user.id);
+    };
+
+    if (socket.connected) {
+      joinRoom();
+    }
+    socket.on("connect", joinRoom);
+
+    const handleIncomingMessage = (msg: any) => {
+      if (msg.receiverId === user.id && !isMessengerOpenRef.current) {
+        setUnreadCount((prev) => prev + 1);
+      }
+    };
+
+    socket.on("new_direct_message", handleIncomingMessage);
+
+    return () => {
+      socket.off("connect", joinRoom);
+      socket.off("new_direct_message", handleIncomingMessage);
+    };
+  }, [user?.id, token]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    const fetchInitialUnread = async () => {
+      try {
+        const res = await fetch("/api/social/conversations", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const conversations = await res.json();
+          const total = conversations.reduce((acc: number, c: any) => acc + c.unreadCount, 0);
+          setUnreadCount(total);
+        }
+      } catch (err) {
+        console.error("Initial unread check error:", err);
+      }
+    };
+
+    fetchInitialUnread();
+  }, [token]);
 
   const handleLogout = () => {
     logout();
@@ -34,6 +95,7 @@ export default function Layout() {
           >
             <span style={{ fontSize: "1.1rem", lineHeight: "1" }}>☰</span>
             <span style={layoutStyles.menuLabel}>Menu</span>
+            {unreadCount > 0 && <span style={layoutStyles.topBarUnreadDot}>●</span>}
           </button>
 
           <div style={layoutStyles.brandWrapper}>
@@ -43,6 +105,15 @@ export default function Layout() {
         </div>
 
         <div style={layoutStyles.navRight}>
+          <button
+            onClick={() => setIsMessengerOpen(true)}
+            style={layoutStyles.quickCommsButton}
+            aria-label="Open Field Messenger"
+          >
+            <span>✉ Field Comms</span>
+            {unreadCount > 0 && <span style={layoutStyles.unreadBadgePill}>{unreadCount}</span>}
+          </button>
+
           <button onClick={toggleTheme} style={layoutStyles.themeToggle} aria-label="Toggle Theme">
             {theme === "dark" ? "Light Mode" : "Dark Mode"}
           </button>
@@ -113,6 +184,20 @@ export default function Layout() {
                 <span style={layoutStyles.navIcon}>👤</span>
                 <span>Investigator Dossier</span>
               </NavLink>
+
+              <button
+                onClick={() => {
+                  closeDrawer();
+                  setIsMessengerOpen(true);
+                }}
+                style={layoutStyles.sidebarMessengerBtn}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={layoutStyles.navIcon}>✉</span>
+                  <span>Field Messenger</span>
+                </div>
+                {unreadCount > 0 && <span style={layoutStyles.unreadBadgePill}>{unreadCount}</span>}
+              </button>
             </nav>
 
             <div style={layoutStyles.drawerFooter}>
@@ -123,6 +208,13 @@ export default function Layout() {
           </aside>
         </>
       )}
+
+      {/* MESSENGER FIELD CONSOLE MODAL */}
+      <MessengerConsole
+        isOpen={isMessengerOpen}
+        onClose={() => setIsMessengerOpen(false)}
+        onUnreadChange={(count) => setUnreadCount(count)}
+      />
 
       {/* MAIN VIEWPORT */}
       <main style={layoutStyles.contentArea}>
@@ -176,6 +268,12 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     fontSize: "0.85rem",
     minHeight: "40px",
     fontWeight: 500,
+    position: "relative",
+  },
+  topBarUnreadDot: {
+    color: "var(--accent-rose)",
+    fontSize: "0.8rem",
+    lineHeight: 1,
   },
   menuLabel: {
     fontSize: "0.85rem",
@@ -196,6 +294,29 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     color: "var(--text-muted)",
     fontWeight: 500,
     display: "none",
+  },
+  quickCommsButton: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    background: "var(--bg-surface-elevated)",
+    color: "var(--accent-primary)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "6px",
+    padding: "6px 12px",
+    cursor: "pointer",
+    fontSize: "0.8rem",
+    minHeight: "40px",
+    fontWeight: 600,
+  },
+  unreadBadgePill: {
+    backgroundColor: "var(--accent-rose)",
+    color: "#ffffff",
+    fontSize: "0.65rem",
+    fontWeight: 700,
+    padding: "2px 6px",
+    borderRadius: "10px",
+    lineHeight: 1,
   },
   themeToggle: {
     background: "var(--bg-surface-elevated)",
@@ -228,7 +349,7 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     zIndex: 100,
     display: "flex",
     flexDirection: "column",
-    boxShadow: "0 4px 20px rgba(0,0,0,0.25)",
+    boxShadow: "0 4px 20px rgba(0, 0, 0, 0.25)",
   },
   drawerHeader: {
     display: "flex",
@@ -309,6 +430,22 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     color: "var(--text-primary)",
     backgroundColor: "var(--bg-surface-elevated)",
     fontWeight: 600,
+  },
+  sidebarMessengerBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "10px 12px",
+    color: "var(--accent-primary)",
+    background: "transparent",
+    border: "none",
+    fontSize: "0.9rem",
+    borderRadius: "6px",
+    fontWeight: 600,
+    minHeight: "44px",
+    cursor: "pointer",
+    width: "100%",
+    textAlign: "left",
   },
   navIcon: {
     fontSize: "1rem",

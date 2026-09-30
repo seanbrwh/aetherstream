@@ -5,6 +5,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Server as SocketIOServer } from "socket.io";
+import { prisma } from "./db.js";
 import authRoutes from "./routes/auth.routes.js";
 import socialRoutes from "./routes/social.routes.js";
 
@@ -20,15 +21,6 @@ app.use(cors());
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
-// Routes
-app.use("/api/auth", authRoutes);
-app.use("/api/social", socialRoutes);
-
-// Root health check
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
-
 // HTTP & Socket.IO server setup
 const httpServer = http.createServer(app);
 const io = new SocketIOServer(httpServer, {
@@ -38,8 +30,79 @@ const io = new SocketIOServer(httpServer, {
   },
 });
 
+app.set("io", io);
+
+// Routes
+app.use("/api/auth", authRoutes);
+app.use("/api/social", socialRoutes);
+
+// Root health check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
 io.on("connection", (socket) => {
   console.log(`[Socket.IO] Client connected: ${socket.id}`);
+
+  // Join personal investigator channel
+  socket.on("join_user", (userId: string) => {
+    if (!userId) return;
+    const roomName = `user:${userId}`;
+    socket.join(roomName);
+    console.log(`[Socket.IO] User ${userId} bound to channel: ${roomName}`);
+  });
+
+  // Typing telemetry relay
+  socket.on(
+    "typing_start",
+    (payload: { senderId: string; receiverId: string; senderCallsign?: string }) => {
+      if (!payload?.receiverId) return;
+      console.log(
+        `[Socket.IO] Typing START from ${payload.senderId} -> user:${payload.receiverId}`,
+      );
+      io.to(`user:${payload.receiverId}`).emit("peer_typing", {
+        senderId: payload.senderId,
+        senderCallsign: payload.senderCallsign || "Operator",
+      });
+    },
+  );
+
+  socket.on("typing_stop", (payload: { senderId: string; receiverId: string }) => {
+    if (!payload?.receiverId) return;
+    console.log(`[Socket.IO] Typing STOP from ${payload.senderId} -> user:${payload.receiverId}`);
+    io.to(`user:${payload.receiverId}`).emit("peer_stop_typing", {
+      senderId: payload.senderId,
+    });
+  });
+
+  // Read receipts acknowledgment
+  socket.on("mark_read", async (payload: { readerId: string; senderId: string }) => {
+    try {
+      const { readerId, senderId } = payload;
+      if (!readerId || !senderId) return;
+
+      const readTimestamp = new Date();
+
+      await prisma.message.updateMany({
+        where: {
+          senderId,
+          receiverId: readerId,
+          readAt: null,
+        },
+        data: {
+          readAt: readTimestamp,
+        },
+      });
+
+      io.to(`user:${senderId}`).emit("messages_read_receipt", {
+        readerId,
+        readAt: readTimestamp,
+      });
+    } catch (err) {
+      console.error("[Socket.IO] mark_read error:", err);
+    }
+  });
+
   socket.on("disconnect", () => {
     console.log(`[Socket.IO] Client disconnected: ${socket.id}`);
   });
@@ -83,7 +146,6 @@ const tcpServer = net.createServer((socket) => {
   });
 });
 
-// Fail-safe error handlers without recursive retry loops
 tcpServer.on("error", (err: any) => {
   if (err.code === "EADDRINUSE") {
     console.error(`\n[TCP Sensor Bridge] FATAL: Port ${TCP_PORT} is locked by another process.`);
@@ -101,7 +163,6 @@ httpServer.on("error", (err: any) => {
   }
 });
 
-// Start listening
 httpServer.listen(WEB_PORT, "0.0.0.0", () => {
   console.log(`AetherStream Core Web & Socket server online on port ${WEB_PORT}`);
 });
@@ -110,12 +171,9 @@ tcpServer.listen(TCP_PORT, "0.0.0.0", () => {
   console.log(`AetherStream Hardware TCP Ingestion online on port ${TCP_PORT}`);
 });
 
-// Graceful cleanup on hot-reload (tsx watch) and process exit
 const cleanShutdown = () => {
   console.log("Closing AetherStream network listeners cleanly...");
-  tcpServer.close(() => {
-    console.log("TCP Port closed.");
-  });
+  tcpServer.close(() => console.log("TCP Port closed."));
   httpServer.close(() => {
     console.log("Web Port closed.");
     process.exit(0);

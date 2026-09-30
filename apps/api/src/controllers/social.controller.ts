@@ -217,6 +217,165 @@ export const createComment = async (req: Request, res: Response): Promise<void> 
   }
 };
 
+export const getInvestigators = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const currentUserId = (req as any).user.userId;
+
+    const investigators = await prisma.user.findMany({
+      where: {
+        NOT: { id: currentUserId },
+      },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        callsign: true,
+        role: true,
+        avatarUrl: true,
+      },
+      orderBy: { username: "asc" },
+    });
+
+    res.json(investigators);
+  } catch (error) {
+    console.error("Fetch Investigators Error:", error);
+    res.status(500).json({ error: "Failed to fetch investigator directory" });
+  }
+};
+
+export const getConversations = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const currentUserId = (req as any).user.userId;
+
+    const messages = await prisma.message.findMany({
+      where: {
+        OR: [{ senderId: currentUserId }, { receiverId: currentUserId }],
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+            role: true,
+            avatarUrl: true,
+          },
+        },
+        receiver: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+            role: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
+
+    const conversationsMap = new Map<string, any>();
+
+    for (const msg of messages) {
+      const isSender = msg.senderId === currentUserId;
+      const partner = isSender ? msg.receiver : msg.sender;
+      const partnerId = partner.id;
+
+      if (!conversationsMap.has(partnerId)) {
+        conversationsMap.set(partnerId, {
+          partner,
+          latestMessage: {
+            id: msg.id,
+            content: msg.content,
+            createdAt: msg.createdAt,
+            senderId: msg.senderId,
+            readAt: msg.readAt,
+          },
+          unreadCount: 0,
+        });
+      }
+
+      if (!isSender && !msg.readAt) {
+        const convo = conversationsMap.get(partnerId);
+        convo.unreadCount += 1;
+      }
+    }
+
+    const conversations = Array.from(conversationsMap.values());
+    res.json(conversations);
+  } catch (error) {
+    console.error("Get Conversations Error:", error);
+    res.status(500).json({ error: "Failed to retrieve conversation threads" });
+  }
+};
+
+export const getDirectMessages = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const currentUserId = (req as any).user.userId;
+    const targetUserId = req.params.userId as string;
+
+    const messages = await prisma.message.findMany({
+      where: {
+        OR: [
+          { senderId: currentUserId, receiverId: targetUserId },
+          { senderId: targetUserId, receiverId: currentUserId },
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+          },
+        },
+      },
+    });
+
+    res.json(messages);
+  } catch (error) {
+    console.error("Get Direct Messages Error:", error);
+    res.status(500).json({ error: "Failed to fetch direct messages" });
+  }
+};
+
+export const markMessagesAsRead = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const currentUserId = (req as any).user.userId;
+    const senderId = req.params.userId as string;
+
+    const readTimestamp = new Date();
+
+    const result = await prisma.message.updateMany({
+      where: {
+        senderId,
+        receiverId: currentUserId,
+        readAt: null,
+      },
+      data: {
+        readAt: readTimestamp,
+      },
+    });
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user:${senderId}`).emit("messages_read_receipt", {
+        readerId: currentUserId,
+        readAt: readTimestamp,
+      });
+    }
+
+    res.json({ updatedCount: result.count, readAt: readTimestamp });
+  } catch (error) {
+    console.error("Mark Read Error:", error);
+    res.status(500).json({ error: "Failed to update message read receipts" });
+  }
+};
+
 export const sendDirectMessage = async (req: Request, res: Response): Promise<void> => {
   try {
     const senderId = (req as any).user.userId;
@@ -253,42 +412,19 @@ export const sendDirectMessage = async (req: Request, res: Response): Promise<vo
       },
     });
 
+    const io = req.app.get("io");
+    if (io) {
+      console.log(
+        `[REST Dispatch] Emitting new_direct_message to user:${receiverId} and user:${senderId}`,
+      );
+      io.to(`user:${receiverId}`).emit("new_direct_message", message);
+      io.to(`user:${senderId}`).emit("new_direct_message", message);
+    }
+
     res.status(201).json(message);
   } catch (error) {
     console.error("Send Direct Message Error:", error);
     res.status(500).json({ error: "Failed to transmit direct message" });
-  }
-};
-
-export const getDirectMessages = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const currentUserId = (req as any).user.userId;
-    const targetUserId = req.params.userId as string;
-
-    const messages = await prisma.message.findMany({
-      where: {
-        OR: [
-          { senderId: currentUserId, receiverId: targetUserId },
-          { senderId: targetUserId, receiverId: currentUserId },
-        ],
-      },
-      orderBy: { createdAt: "asc" },
-      include: {
-        sender: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            callsign: true,
-          },
-        },
-      },
-    });
-
-    res.json(messages);
-  } catch (error) {
-    console.error("Get Direct Messages Error:", error);
-    res.status(500).json({ error: "Failed to fetch direct messages" });
   }
 };
 
