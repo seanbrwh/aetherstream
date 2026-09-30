@@ -3,14 +3,24 @@ import { io } from "socket.io-client";
 import { useAuth } from "../context/AuthContext";
 
 interface Author {
-  email: string;
+  id: string;
+  username: string;
+  displayName: string | null;
+  callsign: string | null;
+  role: string | null;
+  avatarUrl: string | null;
 }
 
 interface Comment {
   id: string;
   content: string;
   createdAt: string;
-  author: Author;
+  author: {
+    id: string;
+    username: string;
+    displayName: string | null;
+    callsign: string | null;
+  };
 }
 
 interface TelemetrySnapshot {
@@ -101,7 +111,6 @@ export default function Feed() {
   useEffect(() => {
     fetchFeed();
 
-    // Dynamically target the host IP rather than hardcoded localhost
     const socketUrl =
       window.location.port === "5173" ? `http://${window.location.hostname}:3030` : "/";
 
@@ -193,6 +202,17 @@ export default function Feed() {
     } catch (err: any) {
       setError(err.message);
     }
+  };
+
+  const renderAuthorBadge = (author: Author) => {
+    const name = author.displayName || author.username || "Investigator";
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <span style={feedStyles.authorName}>{name}</span>
+        {author.callsign && <span style={feedStyles.callsignBadge}>[{author.callsign}]</span>}
+        {author.role && <span style={feedStyles.roleBadge}>{author.role}</span>}
+      </div>
+    );
   };
 
   return (
@@ -326,8 +346,10 @@ export default function Feed() {
               {/* POST HEADER */}
               <div style={feedStyles.postHeader}>
                 <div>
-                  <div style={feedStyles.authorEmail}>{post.author.email}</div>
-                  {post.location && <div style={feedStyles.locationBadge}>📍 {post.location}</div>}
+                  {renderAuthorBadge(post.author)}
+                  {post.location && (
+                    <div style={feedStyles.locationBadge}>Location: {post.location}</div>
+                  )}
                 </div>
                 <div style={feedStyles.postDate}>
                   {new Date(post.createdAt).toLocaleString(undefined, {
@@ -408,12 +430,18 @@ export default function Feed() {
               <div style={feedStyles.commentsSection}>
                 {post.comments.length > 0 && (
                   <div style={feedStyles.commentsList}>
-                    {post.comments.map((comment) => (
-                      <div key={comment.id} style={feedStyles.commentItem}>
-                        <span style={feedStyles.commentAuthor}>{comment.author.email}:</span>
-                        <span style={feedStyles.commentText}>{comment.content}</span>
-                      </div>
-                    ))}
+                    {post.comments.map((comment) => {
+                      const commenterName = comment.author.displayName || comment.author.username;
+                      return (
+                        <div key={comment.id} style={feedStyles.commentItem}>
+                          <span style={feedStyles.commentAuthor}>
+                            {comment.author.callsign ? `[${comment.author.callsign}] ` : ""}
+                            {commenterName}:
+                          </span>
+                          <span style={feedStyles.commentText}>{comment.content}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -616,9 +644,27 @@ const feedStyles: Record<string, React.CSSProperties> = {
     alignItems: "flex-start",
     marginBottom: "0.75rem",
   },
-  authorEmail: {
-    fontSize: "0.9rem",
-    fontWeight: 600,
+  authorName: {
+    fontSize: "0.95rem",
+    fontWeight: 700,
+    color: "var(--text-primary)",
+  },
+  callsignBadge: {
+    fontSize: "0.75rem",
+    fontWeight: 700,
+    color: "var(--accent-primary)",
+    backgroundColor: "var(--bg-surface-elevated)",
+    border: "1px solid var(--border-default)",
+    padding: "2px 6px",
+    borderRadius: "4px",
+    fontFamily: "monospace",
+  },
+  roleBadge: {
+    fontSize: "0.7rem",
+    color: "var(--text-muted)",
+    backgroundColor: "var(--bg-surface-elevated)",
+    padding: "2px 6px",
+    borderRadius: "4px",
   },
   locationBadge: {
     display: "inline-block",
@@ -628,7 +674,7 @@ const feedStyles: Record<string, React.CSSProperties> = {
     padding: "2px 8px",
     borderRadius: "4px",
     border: "1px solid var(--border-default)",
-    marginTop: "4px",
+    marginTop: "6px",
   },
   postDate: {
     fontSize: "0.75rem",

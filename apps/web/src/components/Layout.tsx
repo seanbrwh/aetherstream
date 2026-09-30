@@ -35,9 +35,15 @@ export default function Layout() {
 
   const closeDrawer = () => setIsDrawerOpen(false);
 
+  const getIdentLabel = () => {
+    if (!user) return "Guest Investigator";
+    if (user.callsign) return `[${user.callsign}] ${user.displayName || user.username}`;
+    return user.displayName || user.username;
+  };
+
   return (
     <div style={layoutStyles.container}>
-      {/* PERSISTENT MINIMAL TOP BAR */}
+      {/* PERSISTENT TOP BAR */}
       <header style={layoutStyles.topBar}>
         <div style={layoutStyles.navLeft}>
           <button
@@ -67,7 +73,7 @@ export default function Layout() {
         </div>
       </header>
 
-      {/* CONDITIONAL DRAWER AND BACKDROP (100% UNMOUNTED WHEN CLOSED) */}
+      {/* CONDITIONAL DRAWER */}
       {isDrawerOpen && (
         <>
           <div onClick={closeDrawer} style={layoutStyles.backdrop} />
@@ -86,10 +92,11 @@ export default function Layout() {
               </button>
             </div>
 
-            {/* OPERATOR CARD */}
+            {/* OPERATOR CARD: SHOWS CALLSIGN & USERNAME ONLY */}
             <div style={layoutStyles.operatorInfo}>
               <div style={layoutStyles.operatorLabel}>Active Investigator</div>
-              <div style={layoutStyles.operatorEmail}>{user ? user.email : "Guest Researcher"}</div>
+              <div style={layoutStyles.operatorIdentity}>{getIdentLabel()}</div>
+              <div style={layoutStyles.operatorRole}>{user?.role || "Field Researcher"}</div>
               <div style={layoutStyles.operatorMeta}>Port 8081 Ingestion Active</div>
             </div>
 
@@ -128,11 +135,10 @@ export default function Layout() {
                 })}
               >
                 <span style={layoutStyles.navIcon}>👤</span>
-                <span>Investigator Profile</span>
+                <span>Investigator Dossier</span>
               </NavLink>
             </nav>
 
-            {/* DRAWER FOOTER */}
             <div style={layoutStyles.drawerFooter}>
               <button onClick={handleLogout} style={layoutStyles.logoutButton}>
                 Sign Out
@@ -142,7 +148,7 @@ export default function Layout() {
         </>
       )}
 
-      {/* MAIN UNCONSTRAINED SCROLLABLE VIEWPORT */}
+      {/* MAIN VIEWPORT */}
       <main style={layoutStyles.contentArea}>
         <Outlet />
       </main>
@@ -306,17 +312,23 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     textTransform: "uppercase",
     letterSpacing: "0.5px",
   },
-  operatorEmail: {
-    fontSize: "0.85rem",
-    fontWeight: 600,
+  operatorIdentity: {
+    fontSize: "0.9rem",
+    fontWeight: 700,
     color: "var(--accent-primary)",
     wordBreak: "break-all",
     marginTop: "2px",
   },
+  operatorRole: {
+    fontSize: "0.75rem",
+    color: "var(--text-secondary)",
+    fontWeight: 500,
+    marginTop: "2px",
+  },
   operatorMeta: {
     fontSize: "0.7rem",
-    color: "var(--text-secondary)",
-    marginTop: "4px",
+    color: "var(--text-muted)",
+    marginTop: "6px",
   },
   navList: {
     display: "flex",

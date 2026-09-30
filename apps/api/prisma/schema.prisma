@@ -1,6 +1,5 @@
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["driverAdapters"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -8,14 +7,23 @@ datasource db {
 }
 
 model User {
-  id               String    @id @default(uuid())
-  email            String    @unique
-  passwordHash     String
-  resetToken       String?
-  resetTokenExpiry DateTime?
-  createdAt        DateTime  @default(now())
-  posts            Post[]
-  comments         Comment[]
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  username            String?   @unique
+  displayName         String?
+  callsign            String?
+  role                String?   @default("Field Investigator")
+  bio                 String?
+  location            String?
+  gearLoadout         String?
+  investigationsCount Int       @default(0)
+  avatarUrl           String?
+  passwordHash        String
+  resetToken          String?
+  resetTokenExpiry    DateTime?
+  createdAt           DateTime  @default(now())
+  posts               Post[]
+  comments            Comment[]
 }
 
 model Device {

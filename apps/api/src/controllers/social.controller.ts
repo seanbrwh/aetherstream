@@ -40,11 +40,25 @@ export const createPost = async (req: Request, res: Response): Promise<void> => 
       },
       include: {
         author: {
-          select: { email: true },
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+            role: true,
+            avatarUrl: true,
+          },
         },
         comments: {
           include: {
-            author: { select: { email: true } },
+            author: {
+              select: {
+                id: true,
+                username: true,
+                displayName: true,
+                callsign: true,
+              },
+            },
           },
         },
       },
@@ -63,13 +77,25 @@ export const getFeed = async (req: Request, res: Response): Promise<void> => {
       orderBy: { createdAt: "desc" },
       include: {
         author: {
-          select: { email: true },
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+            role: true,
+            avatarUrl: true,
+          },
         },
         comments: {
           orderBy: { createdAt: "asc" },
           include: {
             author: {
-              select: { email: true },
+              select: {
+                id: true,
+                username: true,
+                displayName: true,
+                callsign: true,
+              },
             },
           },
         },
@@ -108,7 +134,12 @@ export const createComment = async (req: Request, res: Response): Promise<void> 
       },
       include: {
         author: {
-          select: { email: true },
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            callsign: true,
+          },
         },
       },
     });
@@ -127,7 +158,15 @@ export const getProfile = async (req: Request, res: Response): Promise<void> => 
     const userProfile = await prisma.user.findUnique({
       where: { id: userId },
       select: {
-        email: true,
+        id: true,
+        username: true,
+        displayName: true,
+        callsign: true,
+        role: true,
+        bio: true,
+        location: true,
+        gearLoadout: true,
+        investigationsCount: true,
         createdAt: true,
         posts: {
           orderBy: { createdAt: "desc" },
@@ -153,5 +192,72 @@ export const getProfile = async (req: Request, res: Response): Promise<void> => 
   } catch (error) {
     console.error("Fetch Profile Error:", error);
     res.status(500).json({ error: "Failed to fetch profile data" });
+  }
+};
+
+export const updateProfile = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = (req as any).user.userId;
+    const {
+      username,
+      displayName,
+      callsign,
+      role,
+      bio,
+      location,
+      gearLoadout,
+      investigationsCount,
+    } = req.body;
+
+    if (username) {
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          username: username.toLowerCase(),
+          NOT: { id: userId },
+        },
+      });
+
+      if (existingUser) {
+        res
+          .status(400)
+          .json({ error: "That username is already claimed by another investigator." });
+        return;
+      }
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(username && { username: username.toLowerCase().trim() }),
+        ...(displayName !== undefined && { displayName: displayName ? displayName.trim() : null }),
+        ...(callsign !== undefined && {
+          callsign: callsign ? callsign.trim().toUpperCase() : null,
+        }),
+        ...(role !== undefined && { role: role ? role.trim() : "Field Investigator" }),
+        ...(bio !== undefined && { bio }),
+        ...(location !== undefined && { location }),
+        ...(gearLoadout !== undefined && { gearLoadout }),
+        ...(investigationsCount !== undefined && {
+          investigationsCount: Number(investigationsCount) || 0,
+        }),
+      },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        callsign: true,
+        role: true,
+        bio: true,
+        location: true,
+        gearLoadout: true,
+        investigationsCount: true,
+        createdAt: true,
+      },
+    });
+
+    res.json(updatedUser);
+  } catch (error) {
+    console.error("Update Profile Error:", error);
+    res.status(500).json({ error: "Failed to update investigator profile" });
   }
 };
