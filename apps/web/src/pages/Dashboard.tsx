@@ -44,20 +44,26 @@ interface TelemetryPayload {
 
 interface TelemetryHistoryPoint {
   timeLabel: string;
-  temp: number;
+  tempF: number;
   capacitance: number;
   peakG: number;
   pressure: number;
 }
 
-const MODES: Record<number, string> = {
-  1: "Acoustic RF Sweep (TEA5767)",
-  2: "Proximity REM-Pod (MPR121)",
-  3: "Seismic Geophone (MPU6050)",
-  4: "Dictionary ITC (Alice Bank)",
+// Plain-English translations of hardware modes
+const SIMPLE_MODES: Record<number, string> = {
+  1: "Spirit Box Radio Sweep",
+  2: "Proximity Field Detection (REM)",
+  3: "Vibration & Footstep Sensor",
+  4: "Speech Dictionary ITC",
 };
 
 const MAX_HISTORY = 24;
+
+// Temperature conversion helper
+const toFahrenheit = (celsius: number): number => {
+  return celsius * 1.8 + 32;
+};
 
 export default function Dashboard() {
   const [data, setData] = useState<TelemetryPayload | null>(null);
@@ -65,7 +71,6 @@ export default function Dashboard() {
   const [history, setHistory] = useState<TelemetryHistoryPoint[]>([]);
   const [packetCount, setPacketCount] = useState<number>(0);
 
-  // Packet frequency calculation
   const lastPacketTime = useRef<number>(Date.now());
   const [hzRate, setHzRate] = useState<number>(0);
 
@@ -97,12 +102,14 @@ export default function Dashboard() {
         second: "2-digit",
       });
 
+      const currentTempF = toFahrenheit(payload.sensors.environment.temp_c);
+
       setHistory((prev) => {
         const next = [
           ...prev,
           {
             timeLabel,
-            temp: payload.sensors.environment.temp_c,
+            tempF: currentTempF,
             capacitance: payload.sensors.mpr121.capacitance,
             peakG: payload.sensors.mpu6050.peak_g,
             pressure: payload.sensors.environment.pressure_hpa,
@@ -122,10 +129,10 @@ export default function Dashboard() {
       <div style={dashStyles.emptyContainer}>
         <div style={dashStyles.radarSpinner} />
         <h3 style={{ margin: "1.25rem 0 0.25rem 0", fontWeight: 600 }}>
-          {connected ? "Synchronizing Sensor Stream..." : "Connecting to Hardware Bridge"}
+          {connected ? "Receiving Live Sensor Data..." : "Waiting for Hardware to Connect"}
         </h3>
         <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: 0 }}>
-          Listening on TCP Port 8081 for incoming ESP32 sensor frames
+          Listening on port 8081 for incoming sensor updates from your research unit
         </p>
       </div>
     );
@@ -134,14 +141,19 @@ export default function Dashboard() {
   const { system, radio, sensors } = data;
   const { environment, mpr121, mpu6050 } = sensors;
 
-  const isColdDrop = environment.temp_c < 24.5;
+  // Real-time calculations in Fahrenheit
+  const tempF = toFahrenheit(environment.temp_c);
+  const coldBaselineF = 72.0;
+  const isColdDrop = tempF < coldBaselineF;
+
+  // Plain language alert states
   const isKineticAlert = mpu6050.peak_g > system.geo_threshold_g;
   const isRemActive = mpr121.capacitance > 120;
 
-  // SVG Line Chart Generator Helpers
+  // SVG trend chart generator
   const renderTrendPath = (
     points: TelemetryHistoryPoint[],
-    key: "temp" | "peakG" | "capacitance",
+    key: "tempF" | "peakG" | "capacitance",
     width: number,
     height: number,
     minVal: number,
@@ -161,21 +173,23 @@ export default function Dashboard() {
     return coords.join(" ");
   };
 
-  const tempMin = 18;
-  const tempMax = 32;
-  const tempPolyline = renderTrendPath(history, "temp", 400, 110, tempMin, tempMax);
+  // Temperature chart limits in Fahrenheit (60°F to 90°F)
+  const tempMin = 60;
+  const tempMax = 90;
+  const tempPolyline = renderTrendPath(history, "tempF", 400, 110, tempMin, tempMax);
 
-  const seismicMax = Math.max(1.5, ...history.map((h) => h.peakG));
+  const seismicMax = Math.max(0.5, ...history.map((h) => h.peakG));
   const seismicPolyline = renderTrendPath(history, "peakG", 400, 110, 0, seismicMax);
 
-  // Capacitance percentage for radial gauge
+  // Capacitance percentage for radar
   const capPercent = Math.min(100, Math.round((mpr121.capacitance / 220) * 100));
 
-  // Accelerometer Kinematic Target Dot Mapping
+  // Device level / tilt dot mapping
   const targetX = 50 + Math.max(-42, Math.min(42, mpu6050.accel.x * 6));
   const targetY = 50 - Math.max(-42, Math.min(42, mpu6050.accel.y * 6));
+  const isBoxFlat = Math.abs(mpu6050.accel.x) < 1.5 && Math.abs(mpu6050.accel.y) < 1.5;
 
-  // Simulated RF spectrum bars centered around carrier
+  // Radio frequency band preview
   const rfFrequencies = [
     radio.frequency - 0.4,
     radio.frequency - 0.2,
@@ -191,109 +205,118 @@ export default function Dashboard() {
       {/* HEADER BAR */}
       <div style={dashStyles.header}>
         <div>
-          <div style={dashStyles.subHeaderTag}>AetherStream Rig // Real-Time Telemetry</div>
-          <h1 style={dashStyles.title}>Instrumentation Console</h1>
+          <div style={dashStyles.subHeaderTag}>Live Field Equipment Monitoring</div>
+          <h1 style={dashStyles.title}>Sensor Monitor Dashboard</h1>
         </div>
 
         <div style={dashStyles.statusCluster}>
           <div style={dashStyles.statusPill}>
-            <span style={dashStyles.pillLabel}>STREAM:</span>
+            <span style={dashStyles.pillLabel}>STATUS:</span>
             <span style={{ fontWeight: 600, color: "var(--accent-emerald)" }}>
-              {connected ? `${hzRate} Hz ACTIVE` : "DISCONNECTED"}
+              {connected ? `Live (${hzRate}/sec)` : "Disconnected"}
             </span>
           </div>
 
           <div style={dashStyles.statusPill}>
-            <span style={dashStyles.pillLabel}>PACKETS:</span>
-            <span style={{ fontWeight: 600, fontFamily: "monospace" }}>#{packetCount}</span>
+            <span style={dashStyles.pillLabel}>LOGGED:</span>
+            <span style={{ fontWeight: 600, fontFamily: "monospace" }}>
+              {packetCount.toLocaleString()} readings
+            </span>
           </div>
 
           <div style={dashStyles.statusPill}>
             <span style={dashStyles.pillLabel}>MODE:</span>
             <span style={{ fontWeight: 600, color: "var(--accent-primary)" }}>
-              {MODES[system.active_mode] || "Multi-Sensor"}
+              {SIMPLE_MODES[system.active_mode] || "Multi-Sensor"}
             </span>
           </div>
         </div>
       </div>
 
-      {/* TOP KPI NUMERIC STRIP */}
+      {/* TOP SUMMARY CARDS (PLAIN ENGLISH) */}
       <div style={dashStyles.kpiGrid}>
+        {/* ROOM TEMPERATURE */}
         <div style={dashStyles.kpiCard}>
-          <div style={dashStyles.kpiTitle}>Ambient Temperature</div>
+          <div style={dashStyles.kpiTitle}>Room Temperature</div>
           <div
             style={{
               ...dashStyles.kpiValue,
               color: isColdDrop ? "var(--accent-cyan)" : "var(--text-primary)",
             }}
           >
-            {environment.temp_c.toFixed(1)}°C
+            {tempF.toFixed(1)}°F
           </div>
           <div style={dashStyles.kpiFootnote}>
-            {isColdDrop ? "Threshold Breach: Rapid Cold Drop" : "Atmospheric Baseline Stable"}
+            {isColdDrop
+              ? "Cold Spot Detected: Below 72.0°F baseline"
+              : "Normal: Temperature is holding steady"}
           </div>
         </div>
 
+        {/* PROXIMITY SENSOR (REM) */}
         <div style={dashStyles.kpiCard}>
-          <div style={dashStyles.kpiTitle}>Capacitive Flux</div>
+          <div style={dashStyles.kpiTitle}>Proximity Energy (REM)</div>
           <div
             style={{
               ...dashStyles.kpiValue,
               color: isRemActive ? "var(--accent-amber)" : "var(--text-primary)",
             }}
           >
-            {mpr121.capacitance}{" "}
-            <span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>mG</span>
+            {capPercent}%
           </div>
           <div style={dashStyles.kpiFootnote}>
-            Pad Mask: 0x{mpr121.pad_mask.toString(16).toUpperCase()} | Level{" "}
-            {system.rem_sensitivity_lvl}/5
+            {isRemActive
+              ? "Alert: Presence or hand detected near antenna"
+              : "Clear: Nothing detected near the antenna"}
           </div>
         </div>
 
+        {/* VIBRATION & SHOCK */}
         <div style={dashStyles.kpiCard}>
-          <div style={dashStyles.kpiTitle}>Seismic Shock Vector</div>
+          <div style={dashStyles.kpiTitle}>Vibration & Movement</div>
           <div
             style={{
               ...dashStyles.kpiValue,
               color: isKineticAlert ? "var(--accent-rose)" : "var(--text-primary)",
             }}
           >
-            {mpu6050.peak_g.toFixed(3)}{" "}
-            <span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>G</span>
+            {isKineticAlert ? "Movement!" : "Still"}
           </div>
           <div style={dashStyles.kpiFootnote}>
-            Alarm Ceiling: {system.geo_threshold_g.toFixed(2)} G Trigger
+            {isKineticAlert
+              ? `Vibration trigger: ${mpu6050.peak_g.toFixed(3)} G force detected`
+              : "Surface is still: No footsteps or bumps detected"}
           </div>
         </div>
 
+        {/* SPIRIT BOX RADIO */}
         <div style={dashStyles.kpiCard}>
-          <div style={dashStyles.kpiTitle}>RF Carrier Sweep</div>
+          <div style={dashStyles.kpiTitle}>Spirit Box Radio Channel</div>
           <div style={{ ...dashStyles.kpiValue, color: "var(--accent-primary)" }}>
             {radio.frequency.toFixed(1)}{" "}
-            <span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>MHz</span>
+            <span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>FM</span>
           </div>
-          <div style={dashStyles.kpiFootnote}>TEA5767 Fast Forward Scan</div>
+          <div style={dashStyles.kpiFootnote}>Scanning rapidly across local broadcast stations</div>
         </div>
       </div>
 
-      {/* DETAILED SENSOR DIAGRAM & CHART GRID */}
+      {/* DETAILED DIAGRAMS WITH LAYMAN EXPLANATIONS */}
       <div style={dashStyles.chartsGrid}>
-        {/* CHART 1: THERMAL & BAROMETRIC CHRONOLOGICAL TREND */}
+        {/* CHART 1: TEMPERATURE TREND IN FAHRENHEIT */}
         <div style={dashStyles.chartCard}>
           <div style={dashStyles.cardHeaderRow}>
             <div>
-              <div style={dashStyles.cardSectionTitle}>Environmental Real-Time Trend</div>
+              <div style={dashStyles.cardSectionTitle}>Temperature Tracker (Cold Spot Watch)</div>
               <div style={dashStyles.cardSectionSubtitle}>
-                BME280 Atmospheric Sensor (24 Sample Rolling Buffer)
+                Watches for sudden unexplained cold spots in the room over the last 2 minutes
               </div>
             </div>
             <div style={dashStyles.chipGroup}>
               <span style={dashStyles.metricPill}>
-                Pressure: {environment.pressure_hpa.toFixed(1)} hPa
+                Humidity: {environment.humidity_pct.toFixed(0)}%
               </span>
               <span style={dashStyles.metricPill}>
-                Humidity: {environment.humidity_pct.toFixed(1)}%
+                Pressure: {environment.pressure_hpa.toFixed(0)} hPa
               </span>
             </div>
           </div>
@@ -304,14 +327,7 @@ export default function Dashboard() {
               style={{ width: "100%", height: "140px", overflow: "visible" }}
               preserveAspectRatio="none"
             >
-              <defs>
-                <linearGradient id="tempAreaGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--accent-cyan)" stopOpacity="0.3" />
-                  <stop offset="100%" stopColor="var(--accent-cyan)" stopOpacity="0.0" />
-                </linearGradient>
-              </defs>
-
-              {/* Grid Lines */}
+              {/* Background grid */}
               <line
                 x1="0"
                 y1="20"
@@ -337,9 +353,9 @@ export default function Dashboard() {
                 strokeDasharray="3 3"
               />
 
-              {/* Anomaly baseline mark at 24.5C */}
+              {/* Cold Spot Reference Line at 72.0°F */}
               {(() => {
-                const markY = 110 - ((24.5 - tempMin) / (tempMax - tempMin)) * 110;
+                const markY = 110 - ((coldBaselineF - tempMin) / (tempMax - tempMin)) * 110;
                 return (
                   <g>
                     <line
@@ -358,13 +374,13 @@ export default function Dashboard() {
                       fontSize="9"
                       fontWeight="600"
                     >
-                      Cold Anomaly Baseline (24.5°C)
+                      Cold Anomaly Line (72.0°F)
                     </text>
                   </g>
                 );
               })()}
 
-              {/* Real-time Trend Polyline */}
+              {/* Live Temperature Polyline in Fahrenheit */}
               {tempPolyline && (
                 <polyline
                   fill="none"
@@ -379,28 +395,33 @@ export default function Dashboard() {
           </div>
 
           <div style={dashStyles.chartAxisRow}>
-            <span>{history[0]?.timeLabel || "T-24"}</span>
-            <span>CURRENT: {environment.temp_c.toFixed(1)}°C</span>
-            <span>{history[history.length - 1]?.timeLabel || "NOW"}</span>
+            <span>Earliest Reading</span>
+            <span>CURRENT: {tempF.toFixed(1)}°F</span>
+            <span>Right Now</span>
+          </div>
+
+          <div style={dashStyles.laymanNote}>
+            <strong>What this means:</strong> Spirits are reported to draw thermal energy from the
+            air. A sudden dip below the blue line indicates an active cold spot.
           </div>
         </div>
 
-        {/* CHART 2: SEISMIC IMPACT WAVEFORM (GEOPHONE) */}
+        {/* CHART 2: VIBRATION MONITOR */}
         <div style={dashStyles.chartCard}>
           <div style={dashStyles.cardHeaderRow}>
             <div>
-              <div style={dashStyles.cardSectionTitle}>Kinematic Shock Oscilloscope</div>
+              <div style={dashStyles.cardSectionTitle}>Floor & Table Vibration Monitor</div>
               <div style={dashStyles.cardSectionSubtitle}>
-                MPU6050 Surface Impact Baseline vs Peak Force
+                Measures physical knocks, footsteps, or table bumps in real time
               </div>
             </div>
             <span
               style={{
                 ...dashStyles.metricPill,
-                color: isKineticAlert ? "var(--accent-rose)" : "var(--text-secondary)",
+                color: isKineticAlert ? "var(--accent-rose)" : "var(--accent-emerald)",
               }}
             >
-              Peak: {mpu6050.peak_g.toFixed(3)} G
+              {isKineticAlert ? "Vibration Alert!" : "Status: Calm"}
             </span>
           </div>
 
@@ -410,7 +431,7 @@ export default function Dashboard() {
               style={{ width: "100%", height: "140px", overflow: "visible" }}
               preserveAspectRatio="none"
             >
-              {/* Threshold Alarm Line */}
+              {/* Trigger Threshold Line */}
               {(() => {
                 const threshNorm = Math.min(1, system.geo_threshold_g / seismicMax);
                 const threshY = 110 - threshNorm * 110;
@@ -432,13 +453,13 @@ export default function Dashboard() {
                       fontSize="9"
                       fontWeight="600"
                     >
-                      Alarm Ceiling ({system.geo_threshold_g.toFixed(2)} G)
+                      Alert Trigger Line ({system.geo_threshold_g.toFixed(2)} G)
                     </text>
                   </g>
                 );
               })()}
 
-              {/* Seismic Waveform Line */}
+              {/* Vibration Line */}
               {seismicPolyline && (
                 <polyline
                   fill="none"
@@ -453,19 +474,24 @@ export default function Dashboard() {
           </div>
 
           <div style={dashStyles.chartAxisRow}>
-            <span>QUIET (0.0 G)</span>
-            <span>SHOCK ABSORPTION</span>
-            <span>MAX: {seismicMax.toFixed(2)} G</span>
+            <span>Still (0.0 G)</span>
+            <span>FORCE DETECTED: {mpu6050.peak_g.toFixed(3)} G</span>
+            <span>Max Spike: {seismicMax.toFixed(2)} G</span>
+          </div>
+
+          <div style={dashStyles.laymanNote}>
+            <strong>What this means:</strong> The line stays flat when the room is peaceful. Any
+            heavy footsteps, door slams, or knocks create an upward spike.
           </div>
         </div>
 
-        {/* DIAGRAM 3: CAPACITIVE PROXIMITY FIELD & RADIAL GAUGE */}
+        {/* DIAGRAM 3: PROXIMITY RADAR (REM-POD) */}
         <div style={dashStyles.chartCard}>
           <div style={dashStyles.cardHeaderRow}>
             <div>
-              <div style={dashStyles.cardSectionTitle}>REM-Pod Proximity Radar</div>
+              <div style={dashStyles.cardSectionTitle}>Antenna Proximity Radar (REM-Pod)</div>
               <div style={dashStyles.cardSectionSubtitle}>
-                MPR121 Antenna Capacitive Disturbance Field
+                Detects static electrical fields and bodies approaching the antenna
               </div>
             </div>
             <span
@@ -474,14 +500,13 @@ export default function Dashboard() {
                 color: isRemActive ? "var(--accent-amber)" : "var(--text-secondary)",
               }}
             >
-              Signal: {capPercent}%
+              Signal Strength: {capPercent}%
             </span>
           </div>
 
           <div style={dashStyles.radarContainer}>
-            {/* Concentric Vector Radar */}
             <div style={dashStyles.radarCircleWrapper}>
-              <svg viewBox="0 0 100 100" style={{ width: "120px", height: "120px" }}>
+              <svg viewBox="0 0 100 100" style={{ width: "110px", height: "110px" }}>
                 <circle
                   cx="50"
                   cy="50"
@@ -508,41 +533,40 @@ export default function Dashboard() {
                 />
                 <circle cx="50" cy="50" r="5" fill="var(--accent-primary)" />
 
-                {/* Dynamic Radiating Wave */}
+                {/* Radiating wave expands with signal strength */}
                 <circle
                   cx="50"
                   cy="50"
                   r={Math.max(8, (capPercent / 100) * 44)}
                   fill="none"
                   stroke={isRemActive ? "var(--accent-amber)" : "var(--accent-primary)"}
-                  strokeWidth="2"
+                  strokeWidth="2.5"
                   opacity={isRemActive ? 0.9 : 0.4}
                 />
               </svg>
             </div>
 
-            {/* Segmented Meter */}
             <div style={dashStyles.radarMetricsSide}>
               <div style={dashStyles.segmentBarContainer}>
-                {[1, 2, 3, 4, 5].map((lvl) => {
-                  const active = mpr121.capacitance >= lvl * 38;
-                  const colors = [
-                    "var(--accent-emerald)",
-                    "var(--accent-cyan)",
-                    "var(--accent-amber)",
-                    "var(--accent-amber)",
-                    "var(--accent-rose)",
-                  ];
+                {[
+                  { lvl: 1, label: "Clear", color: "var(--accent-emerald)" },
+                  { lvl: 2, label: "Faint", color: "var(--accent-cyan)" },
+                  { lvl: 3, label: "Near", color: "var(--accent-amber)" },
+                  { lvl: 4, label: "Close", color: "var(--accent-amber)" },
+                  { lvl: 5, label: "Touch", color: "var(--accent-rose)" },
+                ].map((item) => {
+                  const active = mpr121.capacitance >= item.lvl * 38;
                   return (
                     <div
-                      key={lvl}
+                      key={item.lvl}
                       style={{
                         ...dashStyles.segmentBlock,
-                        backgroundColor: active ? colors[lvl - 1] : "var(--bg-surface-elevated)",
-                        border: `1px solid ${active ? colors[lvl - 1] : "var(--border-default)"}`,
+                        backgroundColor: active ? item.color : "var(--bg-surface-elevated)",
+                        borderColor: active ? item.color : "var(--border-default)",
+                        color: active ? "#ffffff" : "var(--text-muted)",
                       }}
                     >
-                      Stage {lvl}
+                      {item.label}
                     </div>
                   );
                 })}
@@ -550,33 +574,38 @@ export default function Dashboard() {
 
               <div style={dashStyles.metricFootnotes}>
                 <div>
-                  <strong>Antenna Baseline:</strong> Calibrated
+                  <strong>Antenna Status:</strong> Calibrated and searching
                 </div>
                 <div>
-                  <strong>Field State:</strong>{" "}
-                  {isRemActive ? "Proximity Entry Registered" : "Equilibrium Stable"}
+                  <strong>Field Reading:</strong>{" "}
+                  {isRemActive ? "Activity detected near antenna!" : "Field is clear and calm"}
                 </div>
               </div>
             </div>
           </div>
+
+          <div style={dashStyles.laymanNote}>
+            <strong>What this means:</strong> Functions like a standard REM-Pod. As energy or a hand
+            gets closer to the antenna, the lights progress from green to red.
+          </div>
         </div>
 
-        {/* DIAGRAM 4: 3-AXIS ATTITUDE VECTOR & RF WATERFALL */}
+        {/* DIAGRAM 4: DEVICE LEVEL & RADIO SWEEP */}
         <div style={dashStyles.chartCard}>
           <div style={dashStyles.cardHeaderRow}>
             <div>
-              <div style={dashStyles.cardSectionTitle}>Kinematic Gyro Vector & RF Spectrum</div>
+              <div style={dashStyles.cardSectionTitle}>Equipment Position & Spirit Box Scanner</div>
               <div style={dashStyles.cardSectionSubtitle}>
-                3-Axis Coordinate Mapping and Acoustic Radio Band
+                Confirms the device is flat and shows the active radio frequency sweep
               </div>
             </div>
             <span style={dashStyles.metricPill}>{radio.frequency.toFixed(1)} MHz</span>
           </div>
 
           <div style={dashStyles.gyroAndRfContainer}>
-            {/* Kinematic Crosshair Visualizer */}
+            {/* Level Bubble Crosshair */}
             <div style={dashStyles.gyroCol}>
-              <div style={dashStyles.colTitle}>Attitude Vector (X/Y)</div>
+              <div style={dashStyles.colTitle}>Device Level (Bubble Level)</div>
               <svg viewBox="0 0 100 100" style={{ width: "100px", height: "100px" }}>
                 <circle
                   cx="50"
@@ -584,6 +613,15 @@ export default function Dashboard() {
                   r="46"
                   fill="var(--bg-surface-elevated)"
                   stroke="var(--border-default)"
+                  strokeWidth="1"
+                />
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="16"
+                  fill="none"
+                  stroke="var(--border-subtle)"
+                  strokeDasharray="2 2"
                   strokeWidth="1"
                 />
                 <line
@@ -602,27 +640,25 @@ export default function Dashboard() {
                   stroke="var(--border-subtle)"
                   strokeWidth="1"
                 />
-                <circle cx="50" cy="50" r="2" fill="var(--text-muted)" />
 
-                {/* Live Position Dot */}
+                {/* Level Dot */}
                 <circle
                   cx={targetX}
                   cy={targetY}
                   r="6"
-                  fill="var(--accent-rose)"
+                  fill={isBoxFlat ? "var(--accent-emerald)" : "var(--accent-rose)"}
                   stroke="#ffffff"
                   strokeWidth="1.5"
                 />
               </svg>
               <div style={dashStyles.axisCoords}>
-                X: {mpu6050.accel.x.toFixed(1)} | Y: {mpu6050.accel.y.toFixed(1)} | Z:{" "}
-                {mpu6050.accel.z.toFixed(1)}
+                {isBoxFlat ? "Station is Sitting Flat" : "Station is Tilted or Moving"}
               </div>
             </div>
 
-            {/* RF Sweep Spectrum Bars */}
+            {/* Radio Frequency Spectrum Bars */}
             <div style={dashStyles.rfCol}>
-              <div style={dashStyles.colTitle}>RF Waterfall Carrier Sweep</div>
+              <div style={dashStyles.colTitle}>FM Radio Station Sweep</div>
               <div style={dashStyles.rfSpectrumBars}>
                 {rfFrequencies.map((freq, idx) => {
                   const isCenter = idx === 3;
@@ -652,8 +688,13 @@ export default function Dashboard() {
                   );
                 })}
               </div>
-              <div style={dashStyles.rfStatusText}>Step Interval: 100ms Forward Sweep</div>
+              <div style={dashStyles.rfStatusText}>Sweeping 10 channels every second</div>
             </div>
+          </div>
+
+          <div style={dashStyles.laymanNote}>
+            <strong>What this means:</strong> The left bubble shows if someone moved or bumped the
+            equipment box. The right bars show the spirit box scanning for voices.
           </div>
         </div>
       </div>
@@ -749,7 +790,7 @@ const dashStyles: Record<string, React.CSSProperties> = {
     letterSpacing: "0.5px",
   },
   kpiValue: {
-    fontSize: "1.8rem",
+    fontSize: "1.75rem",
     fontWeight: 700,
     fontFamily: "monospace",
     margin: "6px 0 2px 0",
@@ -758,6 +799,7 @@ const dashStyles: Record<string, React.CSSProperties> = {
     fontSize: "0.75rem",
     color: "var(--text-secondary)",
     marginTop: "4px",
+    lineHeight: 1.4,
   },
   chartsGrid: {
     display: "grid",
@@ -772,7 +814,7 @@ const dashStyles: Record<string, React.CSSProperties> = {
     boxShadow: "var(--card-shadow)",
     display: "flex",
     flexDirection: "column",
-    gap: "12px",
+    gap: "10px",
   },
   cardHeaderRow: {
     display: "flex",
@@ -782,8 +824,8 @@ const dashStyles: Record<string, React.CSSProperties> = {
     gap: "8px",
   },
   cardSectionTitle: {
-    fontSize: "0.9rem",
-    fontWeight: 600,
+    fontSize: "0.95rem",
+    fontWeight: 700,
     color: "var(--text-primary)",
   },
   cardSectionSubtitle: {
@@ -819,10 +861,20 @@ const dashStyles: Record<string, React.CSSProperties> = {
     color: "var(--text-muted)",
     fontFamily: "monospace",
   },
+  laymanNote: {
+    fontSize: "0.75rem",
+    color: "var(--text-secondary)",
+    backgroundColor: "var(--bg-surface-elevated)",
+    borderLeft: "3px solid var(--accent-primary)",
+    padding: "6px 10px",
+    borderRadius: "0 4px 4px 0",
+    marginTop: "4px",
+    lineHeight: 1.4,
+  },
   radarContainer: {
     display: "flex",
     alignItems: "center",
-    gap: "1.5rem",
+    gap: "1.25rem",
     backgroundColor: "var(--bg-surface-elevated)",
     border: "1px solid var(--border-default)",
     borderRadius: "6px",
@@ -838,7 +890,7 @@ const dashStyles: Record<string, React.CSSProperties> = {
     flexGrow: 1,
     display: "flex",
     flexDirection: "column",
-    gap: "12px",
+    gap: "10px",
     minWidth: "180px",
   },
   segmentBarContainer: {
@@ -851,14 +903,14 @@ const dashStyles: Record<string, React.CSSProperties> = {
     borderRadius: "4px",
     textAlign: "center",
     fontSize: "0.65rem",
-    fontWeight: 600,
-    color: "var(--text-primary)",
+    fontWeight: 700,
+    border: "1px solid",
     transition: "all 0.15s ease",
   },
   metricFootnotes: {
     fontSize: "0.75rem",
     color: "var(--text-secondary)",
-    lineHeight: 1.6,
+    lineHeight: 1.5,
   },
   gyroAndRfContainer: {
     display: "grid",
@@ -882,9 +934,9 @@ const dashStyles: Record<string, React.CSSProperties> = {
     textAlign: "center",
   },
   axisCoords: {
-    fontSize: "0.7rem",
-    fontFamily: "monospace",
-    color: "var(--text-muted)",
+    fontSize: "0.75rem",
+    fontWeight: 600,
+    color: "var(--text-primary)",
     marginTop: "4px",
   },
   rfCol: {

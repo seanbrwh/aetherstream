@@ -26,8 +26,109 @@ model User {
   posts            Post[]
   comments         Comment[]
   likes            Like[]
-  sentMessages     Message[] @relation("SentMessages")
-  receivedMessages Message[] @relation("ReceivedMessages")
+  sentMessages     Message[]      @relation("SentMessages")
+  receivedMessages Message[]      @relation("ReceivedMessages")
+  followers        Follow[]       @relation("FollowersTarget")
+  following        Follow[]       @relation("FollowerAuthor")
+  notifications    Notification[]
+
+  ledSquads        Squad[]        @relation("SquadLeader")
+  squadMemberships SquadMember[]
+  squadMessages    SquadMessage[]
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  type      String
+  title     String
+  content   String
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+}
+
+model Squad {
+  id           String           @id @default(uuid())
+  name         String
+  callsign     String           @unique
+  mission      String?
+  location     String?
+  huntDate     DateTime?
+  stagingNotes String?
+  createdAt    DateTime         @default(now())
+  leaderId     String
+  leader       User             @relation("SquadLeader", fields: [leaderId], references: [id], onDelete: Cascade)
+  members      SquadMember[]
+  messages     SquadMessage[]
+  floorplans   SquadFloorplan[]
+  planItems    SquadPlanItem[]
+}
+
+model SquadFloorplan {
+  id        String   @id @default(uuid())
+  title     String
+  imageUrl  String
+  createdAt DateTime @default(now())
+  squadId   String
+  squad     Squad    @relation(fields: [squadId], references: [id], onDelete: Cascade)
+
+  @@index([squadId])
+}
+
+model SquadPlanItem {
+  id         String   @id @default(uuid())
+  title      String
+  phase      String   @default("ACTIVE") // "PRE_HUNT" | "ACTIVE" | "DEBRIEF"
+  assignedTo String?
+  completed  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  squadId    String
+  squad      Squad    @relation(fields: [squadId], references: [id], onDelete: Cascade)
+
+  @@index([squadId])
+}
+
+model SquadMember {
+  id       String   @id @default(uuid())
+  role     String   @default("Operator")
+  joinedAt DateTime @default(now())
+  squadId  String
+  squad    Squad    @relation(fields: [squadId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([squadId, userId])
+  @@index([userId])
+  @@index([squadId])
+}
+
+model SquadMessage {
+  id        String   @id @default(uuid())
+  content   String
+  createdAt DateTime @default(now())
+  squadId   String
+  squad     Squad    @relation(fields: [squadId], references: [id], onDelete: Cascade)
+  senderId  String
+  sender    User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([squadId, createdAt])
+}
+
+model Follow {
+  id          String   @id @default(uuid())
+  createdAt   DateTime @default(now())
+  followerId  String
+  follower    User     @relation("FollowerAuthor", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId String
+  following   User     @relation("FollowersTarget", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
 }
 
 model Device {

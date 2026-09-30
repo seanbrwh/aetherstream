@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 import { useAuth } from "../context/AuthContext";
 
@@ -67,18 +68,7 @@ interface Post {
   likeCount: number;
   commentCount: number;
   isLiked: boolean;
-}
-
-interface DirectMessage {
-  id: string;
-  content: string;
-  createdAt: string;
-  sender: {
-    id: string;
-    username: string;
-    displayName: string | null;
-    callsign: string | null;
-  };
+  isFollowingAuthor: boolean;
 }
 
 const MODES: Record<number, string> = {
@@ -90,7 +80,10 @@ const MODES: Record<number, string> = {
 
 export default function Feed() {
   const { token, user, logout } = useAuth();
+  const navigate = useNavigate();
+
   const [posts, setPosts] = useState<Post[]>([]);
+  const [feedScope, setFeedScope] = useState<"all" | "following">("all");
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [newPostContent, setNewPostContent] = useState("");
   const [locationTag, setLocationTag] = useState("");
@@ -101,17 +94,18 @@ export default function Feed() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Mention autocomplete state
+  const [directory, setDirectory] = useState<Author[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionTargetField, setMentionTargetField] = useState<"compose" | string | null>(null);
+  const composeTextareaRef = useRef<HTMLTextAreaElement>(null);
+
   const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
 
-  const [dmTargetAuthor, setDmTargetAuthor] = useState<Author | null>(null);
-  const [dmList, setDmList] = useState<DirectMessage[]>([]);
-  const [dmInput, setDmInput] = useState("");
-  const [dmLoading, setDmLoading] = useState(false);
-
-  const fetchFeed = async () => {
+  const fetchFeed = async (scope = feedScope) => {
     try {
-      const res = await fetch("/api/social/feed", {
+      const res = await fetch(`/api/social/feed?scope=${scope}`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -131,8 +125,24 @@ export default function Feed() {
     }
   };
 
+  const fetchDirectory = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch("/api/social/investigators", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data: Author[] = await res.json();
+        setDirectory(data);
+      }
+    } catch (err) {
+      console.error("Fetch directory error:", err);
+    }
+  };
+
   useEffect(() => {
-    fetchFeed();
+    fetchFeed(feedScope);
+    fetchDirectory();
 
     const socketUrl =
       window.location.port === "5173" ? `http://${window.location.hostname}:3030` : "/";
@@ -146,7 +156,120 @@ export default function Feed() {
     return () => {
       socket.disconnect();
     };
-  }, [token, logout]);
+  }, [token, logout, feedScope]);
+
+  const handleToggleFollow = async (authorId: string) => {
+    setPosts((prev) =>
+      prev.map((p) => {
+        if (p.author.id === authorId) {
+          return { ...p, isFollowingAuthor: !p.isFollowingAuthor };
+        }
+        return p;
+      }),
+    );
+
+    try {
+      const res = await fetch(`/api/social/users/${authorId}/follow`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        fetchFeed(feedScope);
+      }
+    } catch (err) {
+      console.error("Follow toggle error:", err);
+      fetchFeed(feedScope);
+    }
+  };
+
+  // Mention Autocomplete Input Handler for Post Composer
+  const handleComposeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const text = e.target.value;
+    setNewPostContent(text);
+
+    const cursorPos = e.target.selectionStart;
+    const textBeforeCursor = text.slice(0, cursorPos);
+    const lastWordMatch = textBeforeCursor.match(/@(\w*)$/);
+
+    if (lastWordMatch) {
+      setMentionQuery(lastWordMatch[1].toLowerCase());
+      setMentionTargetField("compose");
+    } else {
+      setMentionQuery(null);
+      setMentionTargetField(null);
+    }
+  };
+
+  // Mention Autocomplete Input Handler for Comments
+  const handleCommentChange = (postId: string, text: string, cursorPos: number) => {
+    setCommentInputs((prev) => ({ ...prev, [postId]: text }));
+
+    const textBeforeCursor = text.slice(0, cursorPos);
+    const lastWordMatch = textBeforeCursor.match(/@(\w*)$/);
+
+    if (lastWordMatch) {
+      setMentionQuery(lastWordMatch[1].toLowerCase());
+      setMentionTargetField(postId);
+    } else {
+      setMentionQuery(null);
+      setMentionTargetField(null);
+    }
+  };
+
+  const applyMention = (author: Author) => {
+    const handleTag = author.callsign ? `@${author.callsign} ` : `@${author.username} `;
+
+    if (mentionTargetField === "compose") {
+      const text = newPostContent;
+      const cursorPos = composeTextareaRef.current?.selectionStart || text.length;
+      const textBeforeCursor = text.slice(0, cursorPos);
+      const textAfterCursor = text.slice(cursorPos);
+      const newBefore = textBeforeCursor.replace(/@\w*$/, handleTag);
+
+      setNewPostContent(newBefore + textAfterCursor);
+    } else if (mentionTargetField) {
+      const postId = mentionTargetField;
+      const text = commentInputs[postId] || "";
+      const newText = text.replace(/@\w*$/, handleTag);
+      setCommentInputs((prev) => ({ ...prev, [postId]: newText }));
+    }
+
+    setMentionQuery(null);
+    setMentionTargetField(null);
+  };
+
+  // Render text with clickable @callsign badges
+  const renderContentWithMentions = (content: string) => {
+    const parts = content.split(/(@\w+)/g);
+
+    return parts.map((part, index) => {
+      if (part.startsWith("@")) {
+        const rawTag = part.slice(1).toUpperCase();
+        const matched = directory.find(
+          (d) =>
+            (d.callsign && d.callsign.toUpperCase() === rawTag) ||
+            d.username.toUpperCase() === rawTag,
+        );
+
+        if (matched) {
+          return (
+            <span
+              key={index}
+              onClick={() => navigate(`/profile/${matched.username}`)}
+              style={feedStyles.mentionBadge}
+              title={`View ${matched.displayName || matched.username}'s dossier`}
+            >
+              {part}
+            </span>
+          );
+        }
+      }
+      return <span key={index}>{part}</span>;
+    });
+  };
 
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -190,7 +313,7 @@ export default function Feed() {
       setLockedTelemetry(null);
       setIsComposeOpen(false);
 
-      fetchFeed();
+      fetchFeed(feedScope);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -220,9 +343,9 @@ export default function Feed() {
           Authorization: `Bearer ${token}`,
         },
       });
-      if (!res.ok) fetchFeed();
+      if (!res.ok) fetchFeed(feedScope);
     } catch {
-      fetchFeed();
+      fetchFeed(feedScope);
     }
   };
 
@@ -244,7 +367,7 @@ export default function Feed() {
       if (!res.ok) throw new Error("Comment could not be published.");
 
       setCommentInputs((prev) => ({ ...prev, [postId]: "" }));
-      fetchFeed();
+      fetchFeed(feedScope);
     } catch (err: any) {
       setError(err.message);
     }
@@ -257,67 +380,60 @@ export default function Feed() {
     }));
   };
 
-  const openDirectMessages = async (targetAuthor: Author) => {
-    setDmTargetAuthor(targetAuthor);
-    setDmLoading(true);
-    setDmList([]);
+  const filteredMentions =
+    mentionQuery !== null
+      ? directory.filter((d) => {
+          const query = mentionQuery.toLowerCase();
+          return (
+            d.username.toLowerCase().includes(query) ||
+            (d.callsign && d.callsign.toLowerCase().includes(query)) ||
+            (d.displayName && d.displayName.toLowerCase().includes(query))
+          );
+        })
+      : [];
 
-    try {
-      const res = await fetch(`/api/social/messages/${targetAuthor.id}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      if (res.ok) {
-        const messages = await res.json();
-        setDmList(messages);
-      }
-    } catch (err: any) {
-      console.error("Fetch DMs error:", err);
-    } finally {
-      setDmLoading(false);
-    }
-  };
-
-  const handleSendDm = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!dmTargetAuthor || !dmInput.trim()) return;
-
-    try {
-      const res = await fetch("/api/social/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          receiverId: dmTargetAuthor.id,
-          content: dmInput.trim(),
-        }),
-      });
-
-      if (res.ok) {
-        const createdMessage = await res.json();
-        setDmList((prev) => [...prev, createdMessage]);
-        setDmInput("");
-      }
-    } catch (err: any) {
-      console.error("Send DM error:", err);
-    }
-  };
-
-  const getAuthorDisplay = (author: Author) => {
+  const getAuthorDisplay = (post: Post) => {
+    const { author, isFollowingAuthor } = post;
     const name = author.displayName || author.username || "Investigator";
     const initials = name.slice(0, 2).toUpperCase();
+    const isSelf = user?.id === author.id;
 
     return (
       <div style={feedStyles.authorContainer}>
-        <div style={feedStyles.avatar}>{initials}</div>
+        <div
+          onClick={() => navigate(`/profile/${author.username}`)}
+          style={{ ...feedStyles.avatar, cursor: "pointer" }}
+          title={`View ${name}'s public dossier`}
+        >
+          {initials}
+        </div>
         <div>
           <div style={feedStyles.authorLine}>
-            <span style={feedStyles.authorName}>{name}</span>
+            <span
+              onClick={() => navigate(`/profile/${author.username}`)}
+              style={{ ...feedStyles.authorName, cursor: "pointer" }}
+            >
+              {name}
+            </span>
             {author.callsign && <span style={feedStyles.callsignPill}>[{author.callsign}]</span>}
             <span style={feedStyles.usernameHandle}>@{author.username}</span>
+
+            {!isSelf && (
+              <button
+                type="button"
+                onClick={() => handleToggleFollow(author.id)}
+                style={{
+                  ...feedStyles.followBtn,
+                  backgroundColor: isFollowingAuthor ? "var(--bg-surface-elevated)" : "transparent",
+                  color: isFollowingAuthor ? "var(--text-muted)" : "var(--accent-primary)",
+                  borderColor: isFollowingAuthor
+                    ? "var(--border-default)"
+                    : "var(--accent-primary)",
+                }}
+              >
+                {isFollowingAuthor ? "Following" : "+ Follow"}
+              </button>
+            )}
           </div>
           {author.role && <div style={feedStyles.roleText}>{author.role}</div>}
         </div>
@@ -327,7 +443,7 @@ export default function Feed() {
 
   return (
     <div style={feedStyles.container}>
-      {/* HEADER BAR WITH SINGLE COMPOSE ACTION */}
+      {/* HEADER BAR */}
       <div style={feedStyles.header}>
         <div>
           <h1 style={feedStyles.title}>Investigation Feed</h1>
@@ -342,6 +458,30 @@ export default function Feed() {
         </button>
       </div>
 
+      {/* FEED SCOPE SELECTOR TABS */}
+      <div style={feedStyles.scopeBar}>
+        <button
+          type="button"
+          onClick={() => setFeedScope("all")}
+          style={{
+            ...feedStyles.scopeTab,
+            ...(feedScope === "all" ? feedStyles.scopeTabActive : {}),
+          }}
+        >
+          All Transmissions
+        </button>
+        <button
+          type="button"
+          onClick={() => setFeedScope("following")}
+          style={{
+            ...feedStyles.scopeTab,
+            ...(feedScope === "following" ? feedStyles.scopeTabActive : {}),
+          }}
+        >
+          Monitored Units Only
+        </button>
+      </div>
+
       {error && (
         <div style={feedStyles.errorBanner}>
           <span>{error}</span>
@@ -352,13 +492,15 @@ export default function Feed() {
       <div style={feedStyles.feedList}>
         {posts.length === 0 ? (
           <div style={feedStyles.emptyFeed}>
-            No case entries logged yet. Be the first to publish an incident report.
+            {feedScope === "following"
+              ? "No dispatches found from monitored units. Follow other investigators to track their logs here."
+              : "No case entries logged yet. Be the first to publish an incident report."}
           </div>
         ) : (
           posts.map((post) => (
             <article key={post.id} style={feedStyles.postCard}>
               <div style={feedStyles.postHeader}>
-                {getAuthorDisplay(post.author)}
+                {getAuthorDisplay(post)}
                 <div style={feedStyles.postDate}>
                   {new Date(post.createdAt).toLocaleDateString(undefined, {
                     month: "short",
@@ -373,7 +515,9 @@ export default function Feed() {
                 <div style={feedStyles.locationBadge}>Location: {post.location}</div>
               )}
 
-              {post.content && <p style={feedStyles.postContent}>{post.content}</p>}
+              {post.content && (
+                <p style={feedStyles.postContent}>{renderContentWithMentions(post.content)}</p>
+              )}
 
               {post.imageUrl && (
                 <div style={feedStyles.imageContainer}>
@@ -461,18 +605,9 @@ export default function Feed() {
                     </span>
                   </button>
                 </div>
-
-                {user?.id !== post.author.id && (
-                  <button
-                    onClick={() => openDirectMessages(post.author)}
-                    style={feedStyles.dmButton}
-                  >
-                    <span>✉</span>
-                    <span>Direct Comm</span>
-                  </button>
-                )}
               </div>
 
+              {/* COMMENTS ACCORDION WITH INLINE AUTOCOMPLETE */}
               {expandedComments[post.id] && (
                 <div style={feedStyles.commentsDrawer}>
                   <div style={feedStyles.commentsList}>
@@ -483,33 +618,60 @@ export default function Feed() {
                     ) : (
                       post.comments.map((comment) => (
                         <div key={comment.id} style={feedStyles.commentItem}>
-                          <span style={feedStyles.commentAuthor}>
+                          <span
+                            onClick={() => navigate(`/profile/${comment.author.username}`)}
+                            style={{ ...feedStyles.commentAuthor, cursor: "pointer" }}
+                          >
                             {comment.author.callsign ? `[${comment.author.callsign}] ` : ""}
                             {comment.author.displayName || comment.author.username}:
                           </span>
-                          <span style={feedStyles.commentContent}>{comment.content}</span>
+                          <span style={feedStyles.commentContent}>
+                            {renderContentWithMentions(comment.content)}
+                          </span>
                         </div>
                       ))
                     )}
                   </div>
 
-                  <form
-                    onSubmit={(e) => handleCreateComment(post.id, e)}
-                    style={feedStyles.commentForm}
-                  >
-                    <input
-                      type="text"
-                      placeholder="Add an observational note..."
-                      value={commentInputs[post.id] || ""}
-                      onChange={(e) =>
-                        setCommentInputs((prev) => ({ ...prev, [post.id]: e.target.value }))
-                      }
-                      style={feedStyles.commentInput}
-                    />
-                    <button type="submit" style={feedStyles.commentSubmitBtn}>
-                      Send
-                    </button>
-                  </form>
+                  <div style={{ position: "relative" }}>
+                    {/* AUTOCOMPLETE POPUP FOR COMMENTS */}
+                    {mentionTargetField === post.id && filteredMentions.length > 0 && (
+                      <div style={feedStyles.mentionDropdown}>
+                        {filteredMentions.map((inv) => (
+                          <div
+                            key={inv.id}
+                            onClick={() => applyMention(inv)}
+                            style={feedStyles.mentionOption}
+                          >
+                            <span style={feedStyles.mentionOptionCallsign}>
+                              {inv.callsign ? `[${inv.callsign}]` : `@${inv.username}`}
+                            </span>
+                            <span style={feedStyles.mentionOptionName}>
+                              {inv.displayName || inv.username}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <form
+                      onSubmit={(e) => handleCreateComment(post.id, e)}
+                      style={feedStyles.commentForm}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Add an observational note (use @callsign to mention)..."
+                        value={commentInputs[post.id] || ""}
+                        onChange={(e) =>
+                          handleCommentChange(post.id, e.target.value, e.target.selectionStart || 0)
+                        }
+                        style={feedStyles.commentInput}
+                      />
+                      <button type="submit" style={feedStyles.commentSubmitBtn}>
+                        Send
+                      </button>
+                    </form>
+                  </div>
                 </div>
               )}
             </article>
@@ -517,7 +679,7 @@ export default function Feed() {
         )}
       </div>
 
-      {/* COMPOSE INCIDENT MODAL */}
+      {/* COMPOSE MODAL WITH AUTOCOMPLETE */}
       {isComposeOpen && (
         <div style={feedStyles.modalOverlay}>
           <div style={feedStyles.modalCard}>
@@ -540,15 +702,36 @@ export default function Feed() {
                 />
               </div>
 
-              <div>
+              <div style={{ position: "relative" }}>
                 <label style={feedStyles.fieldLabel}>Field Observation Log</label>
                 <textarea
-                  placeholder="Document anomalous audio, sensory perceptions, or thermal anomalies..."
+                  ref={composeTextareaRef}
+                  placeholder="Document anomalous audio, sensory perceptions, or tag units with @callsign..."
                   value={newPostContent}
-                  onChange={(e) => setNewPostContent(e.target.value)}
+                  onChange={handleComposeChange}
                   rows={4}
                   style={feedStyles.modalTextarea}
                 />
+
+                {/* AUTOCOMPLETE POPUP FOR COMPOSE */}
+                {mentionTargetField === "compose" && filteredMentions.length > 0 && (
+                  <div style={feedStyles.composeMentionDropdown}>
+                    {filteredMentions.map((inv) => (
+                      <div
+                        key={inv.id}
+                        onClick={() => applyMention(inv)}
+                        style={feedStyles.mentionOption}
+                      >
+                        <span style={feedStyles.mentionOptionCallsign}>
+                          {inv.callsign ? `[${inv.callsign}]` : `@${inv.username}`}
+                        </span>
+                        <span style={feedStyles.mentionOptionName}>
+                          {inv.displayName || inv.username}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div style={feedStyles.modalMediaGrid}>
@@ -646,79 +829,6 @@ export default function Feed() {
           </div>
         </div>
       )}
-
-      {/* DIRECT MESSAGING MODAL */}
-      {dmTargetAuthor && (
-        <div style={feedStyles.modalOverlay}>
-          <div style={feedStyles.dmCard}>
-            <div style={feedStyles.modalHeader}>
-              <div>
-                <div style={{ fontSize: "0.95rem", fontWeight: 700 }}>
-                  Direct Comm: {dmTargetAuthor.displayName || dmTargetAuthor.username}
-                </div>
-                {dmTargetAuthor.callsign && (
-                  <div
-                    style={{ fontSize: "0.75rem", color: "var(--accent-primary)", fontWeight: 600 }}
-                  >
-                    Callsign: [{dmTargetAuthor.callsign}]
-                  </div>
-                )}
-              </div>
-              <button onClick={() => setDmTargetAuthor(null)} style={feedStyles.modalCloseBtn}>
-                ✕
-              </button>
-            </div>
-
-            <div style={feedStyles.dmHistory}>
-              {dmLoading ? (
-                <div style={feedStyles.dmLoadingText}>Connecting transmission channel...</div>
-              ) : dmList.length === 0 ? (
-                <div style={feedStyles.dmEmptyText}>
-                  No previous private communications with this investigator.
-                </div>
-              ) : (
-                dmList.map((msg) => {
-                  const isMine = msg.sender.id === user?.id;
-                  return (
-                    <div
-                      key={msg.id}
-                      style={{
-                        ...feedStyles.dmMessageBubble,
-                        alignSelf: isMine ? "flex-end" : "flex-start",
-                        backgroundColor: isMine
-                          ? "var(--accent-primary)"
-                          : "var(--bg-surface-elevated)",
-                        color: isMine ? "#ffffff" : "var(--text-primary)",
-                      }}
-                    >
-                      <div style={feedStyles.dmBubbleContent}>{msg.content}</div>
-                      <div style={feedStyles.dmBubbleTime}>
-                        {new Date(msg.createdAt).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            <form onSubmit={handleSendDm} style={feedStyles.dmInputForm}>
-              <input
-                type="text"
-                placeholder="Type direct field transmission..."
-                value={dmInput}
-                onChange={(e) => setDmInput(e.target.value)}
-                style={feedStyles.dmInputField}
-              />
-              <button type="submit" style={feedStyles.dmSendBtn}>
-                Send
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -763,6 +873,26 @@ const feedStyles: Record<string, React.CSSProperties> = {
     fontSize: "0.85rem",
     cursor: "pointer",
     minHeight: "40px",
+  },
+  scopeBar: {
+    display: "flex",
+    gap: "8px",
+    borderBottom: "1px solid var(--border-subtle)",
+    paddingBottom: "6px",
+  },
+  scopeTab: {
+    background: "transparent",
+    border: "none",
+    color: "var(--text-muted)",
+    fontSize: "0.85rem",
+    fontWeight: 600,
+    padding: "6px 12px",
+    cursor: "pointer",
+    borderRadius: "4px",
+  },
+  scopeTabActive: {
+    color: "var(--accent-primary)",
+    backgroundColor: "var(--bg-surface-elevated)",
   },
   errorBanner: {
     backgroundColor: "rgba(239, 68, 68, 0.1)",
@@ -844,6 +974,15 @@ const feedStyles: Record<string, React.CSSProperties> = {
     fontSize: "0.8rem",
     color: "var(--text-muted)",
   },
+  followBtn: {
+    border: "1px solid",
+    borderRadius: "4px",
+    padding: "2px 8px",
+    fontSize: "0.7rem",
+    fontWeight: 600,
+    cursor: "pointer",
+    marginLeft: "4px",
+  },
   roleText: {
     fontSize: "0.7rem",
     color: "var(--text-secondary)",
@@ -870,6 +1009,17 @@ const feedStyles: Record<string, React.CSSProperties> = {
     lineHeight: 1.6,
     margin: "0 0 1rem 0",
     whiteSpace: "pre-wrap",
+  },
+  mentionBadge: {
+    color: "var(--accent-primary)",
+    backgroundColor: "var(--bg-surface-elevated)",
+    padding: "1px 6px",
+    borderRadius: "4px",
+    fontWeight: 600,
+    fontFamily: "monospace",
+    border: "1px solid var(--border-subtle)",
+    cursor: "pointer",
+    margin: "0 2px",
   },
   imageContainer: {
     marginBottom: "1rem",
@@ -950,20 +1100,6 @@ const feedStyles: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     minHeight: "36px",
   },
-  dmButton: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    backgroundColor: "var(--bg-surface-elevated)",
-    color: "var(--accent-primary)",
-    border: "1px solid var(--border-default)",
-    borderRadius: "6px",
-    padding: "6px 10px",
-    fontSize: "0.8rem",
-    fontWeight: 600,
-    cursor: "pointer",
-    minHeight: "36px",
-  },
   commentsDrawer: {
     marginTop: "0.75rem",
     paddingTop: "0.75rem",
@@ -1016,6 +1152,53 @@ const feedStyles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     fontSize: "0.8rem",
     cursor: "pointer",
+  },
+  mentionDropdown: {
+    position: "absolute",
+    bottom: "46px",
+    left: 0,
+    right: 0,
+    backgroundColor: "var(--bg-surface)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "6px",
+    boxShadow: "0 -4px 16px rgba(0,0,0,0.2)",
+    maxHeight: "160px",
+    overflowY: "auto",
+    zIndex: 20,
+    padding: "4px",
+  },
+  composeMentionDropdown: {
+    position: "absolute",
+    top: "100%",
+    left: 0,
+    right: 0,
+    backgroundColor: "var(--bg-surface)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "6px",
+    boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+    maxHeight: "160px",
+    overflowY: "auto",
+    zIndex: 20,
+    padding: "4px",
+  },
+  mentionOption: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "6px 10px",
+    borderRadius: "4px",
+    cursor: "pointer",
+    backgroundColor: "transparent",
+  },
+  mentionOptionCallsign: {
+    fontSize: "0.75rem",
+    fontWeight: 700,
+    color: "var(--accent-primary)",
+    fontFamily: "monospace",
+  },
+  mentionOptionName: {
+    fontSize: "0.85rem",
+    color: "var(--text-primary)",
   },
   modalOverlay: {
     position: "fixed",
@@ -1174,79 +1357,5 @@ const feedStyles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     fontSize: "0.85rem",
     minHeight: "42px",
-  },
-  dmCard: {
-    backgroundColor: "var(--bg-surface)",
-    border: "1px solid var(--border-default)",
-    borderRadius: "8px",
-    padding: "1.25rem",
-    maxWidth: "480px",
-    width: "100%",
-    display: "flex",
-    flexDirection: "column",
-    height: "520px",
-    boxShadow: "0 8px 30px rgba(0,0,0,0.3)",
-  },
-  dmHistory: {
-    flexGrow: 1,
-    overflowY: "auto",
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-    padding: "10px 0",
-  },
-  dmLoadingText: {
-    textAlign: "center",
-    color: "var(--text-muted)",
-    fontSize: "0.85rem",
-    margin: "auto 0",
-  },
-  dmEmptyText: {
-    textAlign: "center",
-    color: "var(--text-muted)",
-    fontSize: "0.85rem",
-    margin: "auto 0",
-  },
-  dmMessageBubble: {
-    maxWidth: "80%",
-    padding: "8px 12px",
-    borderRadius: "8px",
-    fontSize: "0.85rem",
-    lineHeight: 1.4,
-  },
-  dmBubbleContent: {
-    wordBreak: "break-word",
-  },
-  dmBubbleTime: {
-    fontSize: "0.65rem",
-    opacity: 0.8,
-    textAlign: "right",
-    marginTop: "3px",
-  },
-  dmInputForm: {
-    display: "flex",
-    gap: "8px",
-    borderTop: "1px solid var(--border-default)",
-    paddingTop: "10px",
-  },
-  dmInputField: {
-    flexGrow: 1,
-    padding: "8px 12px",
-    backgroundColor: "var(--bg-surface-elevated)",
-    color: "var(--text-primary)",
-    border: "1px solid var(--border-default)",
-    borderRadius: "6px",
-    fontSize: "16px",
-    minHeight: "40px",
-  },
-  dmSendBtn: {
-    padding: "8px 16px",
-    backgroundColor: "var(--accent-primary)",
-    color: "#ffffff",
-    border: "none",
-    borderRadius: "6px",
-    fontWeight: 600,
-    fontSize: "0.85rem",
-    cursor: "pointer",
   },
 };

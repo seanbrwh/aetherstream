@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect } from "react";
+import type { ReactNode } from "react";
 
 export interface UserProfile {
   id: string;
-  email?: string;
+  email: string;
   username: string;
   displayName?: string | null;
   callsign?: string | null;
@@ -10,41 +11,43 @@ export interface UserProfile {
 }
 
 interface AuthContextType {
-  token: string | null;
   user: UserProfile | null;
+  token: string | null;
   login: (token: string, user: UserProfile) => void;
   logout: () => void;
-  updateUserContext: (updatedUser: Partial<UserProfile>) => void;
+  updateUser: (updatedUser: Partial<UserProfile>) => void;
+  loading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem("aether_token"));
-  const [user, setUser] = useState<UserProfile | null>(() => {
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const savedToken = localStorage.getItem("aether_token");
     const savedUser = localStorage.getItem("aether_user");
-    return savedUser ? JSON.parse(savedUser) : null;
-  });
 
-  useEffect(() => {
-    if (token) {
-      localStorage.setItem("aether_token", token);
-    } else {
-      localStorage.removeItem("aether_token");
+    if (savedToken && savedUser) {
+      try {
+        setToken(savedToken);
+        setUser(JSON.parse(savedUser));
+      } catch (err) {
+        console.error("Failed to parse cached operator dossier:", err);
+        localStorage.removeItem("aether_token");
+        localStorage.removeItem("aether_user");
+      }
     }
-  }, [token]);
-
-  useEffect(() => {
-    if (user) {
-      localStorage.setItem("aether_user", JSON.stringify(user));
-    } else {
-      localStorage.removeItem("aether_user");
-    }
-  }, [user]);
+    setLoading(false);
+  }, []);
 
   const login = (newToken: string, newUser: UserProfile) => {
     setToken(newToken);
     setUser(newUser);
+    localStorage.setItem("aether_token", newToken);
+    localStorage.setItem("aether_user", JSON.stringify(newUser));
   };
 
   const logout = () => {
@@ -54,24 +57,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem("aether_user");
   };
 
-  const updateUserContext = (updatedUser: Partial<UserProfile>) => {
+  const updateUser = (updatedFields: Partial<UserProfile>) => {
     setUser((prev) => {
       if (!prev) return null;
-      return { ...prev, ...updatedUser };
+      const merged = { ...prev, ...updatedFields };
+      localStorage.setItem("aether_user", JSON.stringify(merged));
+      return merged;
     });
   };
 
   return (
-    <AuthContext.Provider value={{ token, user, login, logout, updateUserContext }}>
+    <AuthContext.Provider value={{ user, token, login, logout, updateUser, loading }}>
       {children}
     </AuthContext.Provider>
   );
-};
+}
 
-export const useAuth = (): AuthContextType => {
+export function useAuth() {
   const context = useContext(AuthContext);
   if (!context) {
     throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
-};
+}

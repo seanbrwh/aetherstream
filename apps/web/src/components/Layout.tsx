@@ -3,72 +3,194 @@ import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { getSocket } from "../lib/socket";
-import MessengerConsole from "./MessengerConsole";
+import DockedMessenger from "./DockedMessenger";
+import CreateSquadModal from "./CreateSquadModal";
+
+interface OnlineOperator {
+  userId: string;
+  socketId: string;
+  username: string;
+  displayName: string | null;
+  callsign: string | null;
+  role: string | null;
+  status: "active" | "idle";
+  lastActivity: number;
+}
+
+interface AlertNotification {
+  id: string;
+  type: string;
+  title: string;
+  content: string;
+  link?: string | null;
+  read: boolean;
+  createdAt: string;
+}
+
+interface SquadItem {
+  id: string;
+  name: string;
+  callsign: string;
+  mission: string | null;
+  members: Array<{ id: string; role: string; user: any }>;
+  _count?: { members: number; messages: number };
+}
 
 export default function Layout() {
   const { user, token, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [isMessengerOpen, setIsMessengerOpen] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
-
-  const isMessengerOpenRef = useRef(isMessengerOpen);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    isMessengerOpenRef.current = isMessengerOpen;
-  }, [isMessengerOpen]);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isMessengerOpen, setIsMessengerOpen] = useState(false);
+  const [targetPartner, setTargetPartner] = useState<any>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
 
-  // Persistent Socket Room Assignment
+  // Field Squad State
+  const [squadList, setSquadList] = useState<OnlineOperator[]>([]);
+  const [mySquads, setMySquads] = useState<SquadItem[]>([]);
+  const [isSquadModalOpen, setIsSquadModalOpen] = useState(false);
+
+  // Alert Notifications State
+  const [notifications, setNotifications] = useState<AlertNotification[]>([]);
+  const [isAlertMenuOpen, setIsAlertMenuOpen] = useState(false);
+  const alertMenuRef = useRef<HTMLDivElement>(null);
+
+  // Fetch squad affiliations
+  const fetchMySquads = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch("/api/social/squads/my", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data: SquadItem[] = await res.json();
+        setMySquads(data);
+
+        // Bind socket to each active squad room
+        const socket = getSocket();
+        data.forEach((sq) => {
+          socket.emit("join_squad", sq.id);
+        });
+      }
+    } catch (err) {
+      console.error("Failed to retrieve squad memberships:", err);
+    }
+  };
+
+  // Initialize socket presence and live alerts
   useEffect(() => {
     if (!user?.id || !token) return;
 
     const socket = getSocket();
 
-    const joinRoom = () => {
-      console.log("[Layout] Registering investigator room:", user.id);
+    const joinSession = () => {
       socket.emit("join_user", user.id);
     };
 
     if (socket.connected) {
-      joinRoom();
+      joinSession();
     }
-    socket.on("connect", joinRoom);
+    socket.on("connect", joinSession);
 
-    const handleIncomingMessage = (msg: any) => {
-      if (msg.receiverId === user.id && !isMessengerOpenRef.current) {
+    // Track active operators
+    socket.on("operators_online", (operators: OnlineOperator[]) => {
+      setSquadList(operators.filter((op) => op.userId !== user.id));
+    });
+
+    // Inbound Direct Message alert
+    socket.on("new_direct_message", (msg) => {
+      if (msg.receiverId === user.id) {
         setUnreadCount((prev) => prev + 1);
       }
-    };
+    });
 
-    socket.on("new_direct_message", handleIncomingMessage);
+    // Inbound Mention or Endorsement Notification
+    socket.on("new_notification", (notif: AlertNotification) => {
+      setNotifications((prev) => [notif, ...prev]);
+    });
+
+    // Inbound Live Hardware Anomaly
+    socket.on("hardware_anomaly_alert", (anomalyNotif: AlertNotification) => {
+      setNotifications((prev) => [anomalyNotif, ...prev]);
+    });
 
     return () => {
-      socket.off("connect", joinRoom);
-      socket.off("new_direct_message", handleIncomingMessage);
+      socket.off("connect", joinSession);
+      socket.off("operators_online");
+      socket.off("new_direct_message");
+      socket.off("new_notification");
+      socket.off("hardware_anomaly_alert");
     };
   }, [user?.id, token]);
 
+  // Initial fetch of unread messages, squads, and notifications
   useEffect(() => {
     if (!token) return;
 
-    const fetchInitialUnread = async () => {
+    const fetchInitialData = async () => {
       try {
-        const res = await fetch("/api/social/conversations", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const conversations = await res.json();
-          const total = conversations.reduce((acc: number, c: any) => acc + c.unreadCount, 0);
+        const [convoRes, notifRes] = await Promise.all([
+          fetch("/api/social/conversations", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/social/notifications", { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+
+        if (convoRes.ok) {
+          const convos = await convoRes.json();
+          const total = convos.reduce((acc: number, c: any) => acc + c.unreadCount, 0);
           setUnreadCount(total);
         }
+
+        if (notifRes.ok) {
+          const notifs = await notifRes.json();
+          setNotifications(notifs);
+        }
+
+        fetchMySquads();
       } catch (err) {
-        console.error("Initial unread check error:", err);
+        console.error("Initial data fetch error:", err);
       }
     };
 
-    fetchInitialUnread();
+    fetchInitialData();
   }, [token]);
+
+  // Dismiss notification popup on click outside
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (alertMenuRef.current && !alertMenuRef.current.contains(e.target as Node)) {
+        setIsAlertMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
+
+  const handleMarkNotificationsRead = async () => {
+    try {
+      await fetch("/api/social/notifications/read", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    } catch (err) {
+      console.error("Failed to mark notifications read:", err);
+    }
+  };
+
+  const handleOpenDirectCommWithOperator = (operator: OnlineOperator) => {
+    setIsDrawerOpen(false);
+    setTargetPartner({
+      id: operator.userId,
+      username: operator.username,
+      displayName: operator.displayName,
+      callsign: operator.callsign,
+      role: operator.role,
+    });
+    setIsMessengerOpen(true);
+  };
+
+  const unreadAlertsCount = notifications.filter((n) => !n.read).length;
 
   const handleLogout = () => {
     logout();
@@ -105,10 +227,90 @@ export default function Layout() {
         </div>
 
         <div style={layoutStyles.navRight}>
+          {/* ACTIVITY AND ANOMALY ALERT BELL */}
+          <div style={{ position: "relative" }} ref={alertMenuRef}>
+            <button
+              onClick={() => setIsAlertMenuOpen(!isAlertMenuOpen)}
+              style={layoutStyles.alertBellBtn}
+              title="Station Activity & Anomaly Alerts"
+            >
+              <span style={{ fontSize: "1.05rem" }}>🔔</span>
+              {unreadAlertsCount > 0 && (
+                <span style={layoutStyles.alertBellBadge}>{unreadAlertsCount}</span>
+              )}
+            </button>
+
+            {/* ALERT DROPDOWN */}
+            {isAlertMenuOpen && (
+              <div style={layoutStyles.alertDropdown}>
+                <div style={layoutStyles.alertDropdownHeader}>
+                  <span style={layoutStyles.alertDropdownTitle}>Activity & Anomalies</span>
+                  {unreadAlertsCount > 0 && (
+                    <button onClick={handleMarkNotificationsRead} style={layoutStyles.markReadBtn}>
+                      Clear Alerts
+                    </button>
+                  )}
+                </div>
+
+                <div style={layoutStyles.alertList}>
+                  {notifications.length === 0 ? (
+                    <div style={layoutStyles.emptyAlertNotice}>
+                      No active alerts or anomalous triggers recorded.
+                    </div>
+                  ) : (
+                    notifications.map((notif) => {
+                      const isAnomaly = notif.type === "ANOMALY";
+                      return (
+                        <div
+                          key={notif.id}
+                          onClick={() => {
+                            if (notif.link) {
+                              setIsAlertMenuOpen(false);
+                              navigate(notif.link);
+                            }
+                          }}
+                          style={{
+                            ...layoutStyles.alertItem,
+                            backgroundColor: notif.read
+                              ? "transparent"
+                              : isAnomaly
+                                ? "rgba(239, 68, 68, 0.08)"
+                                : "var(--bg-surface-elevated)",
+                            cursor: notif.link ? "pointer" : "default",
+                          }}
+                        >
+                          <div style={layoutStyles.alertTopRow}>
+                            <span
+                              style={{
+                                ...layoutStyles.alertTag,
+                                color: isAnomaly ? "var(--accent-rose)" : "var(--accent-primary)",
+                              }}
+                            >
+                              {notif.type}
+                            </span>
+                            <span style={layoutStyles.alertTime}>
+                              {new Date(notif.createdAt).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </span>
+                          </div>
+                          <div style={layoutStyles.alertItemTitle}>{notif.title}</div>
+                          <div style={layoutStyles.alertItemContent}>{notif.content}</div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* DOCKED MESSENGER TRIGGER */}
           <button
-            onClick={() => setIsMessengerOpen(true)}
+            onClick={() => setIsMessengerOpen(!isMessengerOpen)}
             style={layoutStyles.quickCommsButton}
-            aria-label="Open Field Messenger"
+            aria-label="Toggle Field Messenger"
           >
             <span>✉ Field Comms</span>
             {unreadCount > 0 && <span style={layoutStyles.unreadBadgePill}>{unreadCount}</span>}
@@ -120,14 +322,14 @@ export default function Layout() {
         </div>
       </header>
 
-      {/* CONDITIONAL DRAWER */}
+      {/* SIDEBAR DRAWER */}
       {isDrawerOpen && (
         <>
           <div onClick={closeDrawer} style={layoutStyles.backdrop} />
           <aside style={layoutStyles.drawer}>
             <div style={layoutStyles.drawerHeader}>
               <div>
-                <div style={layoutStyles.drawerTitle}>Navigation</div>
+                <div style={layoutStyles.drawerTitle}>Station Control Rail</div>
                 <div style={layoutStyles.drawerSubtitle}>Field Research Suite</div>
               </div>
               <button
@@ -141,13 +343,13 @@ export default function Layout() {
 
             {/* OPERATOR CARD */}
             <div style={layoutStyles.operatorInfo}>
-              <div style={layoutStyles.operatorLabel}>Active Investigator</div>
+              <div style={layoutStyles.operatorLabel}>Active Station Lead</div>
               <div style={layoutStyles.operatorIdentity}>{getIdentLabel()}</div>
               <div style={layoutStyles.operatorRole}>{user?.role || "Field Researcher"}</div>
-              <div style={layoutStyles.operatorMeta}>Port 8081 Ingestion Active</div>
+              <div style={layoutStyles.operatorMeta}>Port 8081 Hardware Connected</div>
             </div>
 
-            {/* NAVIGATION LINKS */}
+            {/* MAIN NAVIGATION */}
             <nav style={layoutStyles.navList}>
               <NavLink
                 to="/"
@@ -174,6 +376,18 @@ export default function Layout() {
               </NavLink>
 
               <NavLink
+                to="/investigators"
+                onClick={closeDrawer}
+                style={({ isActive }) => ({
+                  ...layoutStyles.navLink,
+                  ...(isActive ? layoutStyles.navLinkActive : {}),
+                })}
+              >
+                <span style={layoutStyles.navIcon}>📡</span>
+                <span>Station Directory</span>
+              </NavLink>
+
+              <NavLink
                 to="/profile"
                 onClick={closeDrawer}
                 style={({ isActive }) => ({
@@ -182,23 +396,100 @@ export default function Layout() {
                 })}
               >
                 <span style={layoutStyles.navIcon}>👤</span>
-                <span>Investigator Dossier</span>
+                <span>My Credentials Dossier</span>
               </NavLink>
-
-              <button
-                onClick={() => {
-                  closeDrawer();
-                  setIsMessengerOpen(true);
-                }}
-                style={layoutStyles.sidebarMessengerBtn}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span style={layoutStyles.navIcon}>✉</span>
-                  <span>Field Messenger</span>
-                </div>
-                {unreadCount > 0 && <span style={layoutStyles.unreadBadgePill}>{unreadCount}</span>}
-              </button>
             </nav>
+
+            {/* ACTIVE FIELD SQUAD SECTION WITH CREATE / JOIN ACTION */}
+            <div style={layoutStyles.squadSection}>
+              <div style={layoutStyles.squadHeader}>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={layoutStyles.squadTitle}>Field Squads</span>
+                  <span style={layoutStyles.squadCountPill}>{squadList.length + 1} Online</span>
+                </div>
+                {/* TRIGGER BUTTON TO ACCESS CREATE / JOIN SQUAD MODAL */}
+                <button
+                  onClick={() => setIsSquadModalOpen(true)}
+                  style={layoutStyles.formSquadBtn}
+                  title="Form or join a field squad"
+                >
+                  + Squad
+                </button>
+              </div>
+
+              {/* LIST OF CURRENT SQUADS */}
+              {mySquads.map((sq) => (
+                <div
+                  key={sq.id}
+                  onClick={() => {
+                    closeDrawer();
+                    navigate(`/squads/${sq.id}`);
+                  }}
+                  style={{ ...layoutStyles.squadBadgeCard, cursor: "pointer" }}
+                  title="Open Squad Expedition Hub"
+                >
+                  <div style={layoutStyles.squadBadgeTop}>
+                    <span style={layoutStyles.squadBadgeName}>{sq.name}</span>
+                    <span style={layoutStyles.squadCodePill}>[{sq.callsign}]</span>
+                  </div>
+                  {sq.mission && <div style={layoutStyles.squadMissionText}>{sq.mission}</div>}
+                  <div style={layoutStyles.squadMetaLine}>
+                    <span>{sq.members?.length || 1} Registered Members (Open Hub ↗)</span>
+                  </div>
+                </div>
+              ))}
+
+              {/* LIVE ONLINE OPERATORS */}
+              <div style={layoutStyles.squadRosterList}>
+                {/* Self Status */}
+                <div style={layoutStyles.squadOperatorItem}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={layoutStyles.statusDotActive} title="Active Monitoring" />
+                    <div>
+                      <div style={layoutStyles.squadCallsign}>
+                        {user?.callsign ? `[${user.callsign}] (You)` : `@${user?.username}`}
+                      </div>
+                      <div style={layoutStyles.squadRole}>{user?.role || "Station Lead"}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Remote Field Operators */}
+                {squadList.length === 0 ? (
+                  <div style={layoutStyles.squadEmptyPrompt}>
+                    No other operators currently deployed.
+                  </div>
+                ) : (
+                  squadList.map((op) => (
+                    <div
+                      key={op.userId}
+                      onClick={() => handleOpenDirectCommWithOperator(op)}
+                      style={layoutStyles.squadOperatorItemInteractive}
+                      title="Click to dispatch direct message"
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span
+                          style={
+                            op.status === "active"
+                              ? layoutStyles.statusDotActive
+                              : layoutStyles.statusDotIdle
+                          }
+                          title={op.status === "active" ? "Active Monitoring" : "Idle"}
+                        />
+                        <div>
+                          <div style={layoutStyles.squadCallsign}>
+                            {op.callsign ? `[${op.callsign}]` : `@${op.username}`}
+                          </div>
+                          <div style={layoutStyles.squadRole}>{op.role || "Field Operator"}</div>
+                        </div>
+                      </div>
+
+                      <span style={layoutStyles.commActionIcon}>✉</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
 
             <div style={layoutStyles.drawerFooter}>
               <button onClick={handleLogout} style={layoutStyles.logoutButton}>
@@ -209,14 +500,21 @@ export default function Layout() {
         </>
       )}
 
-      {/* MESSENGER FIELD CONSOLE MODAL */}
-      <MessengerConsole
+      {/* DOCKED MESSENGER */}
+      <DockedMessenger
         isOpen={isMessengerOpen}
         onClose={() => setIsMessengerOpen(false)}
         onUnreadChange={(count) => setUnreadCount(count)}
+        initialPartner={targetPartner}
       />
 
-      {/* MAIN VIEWPORT */}
+      {/* MODAL TO CREATE OR JOIN A FIELD SQUAD */}
+      <CreateSquadModal
+        isOpen={isSquadModalOpen}
+        onClose={() => setIsSquadModalOpen(false)}
+        onSquadCreatedOrJoined={fetchMySquads}
+      />
+
       <main style={layoutStyles.contentArea}>
         <Outlet />
       </main>
@@ -253,7 +551,7 @@ const layoutStyles: Record<string, React.CSSProperties> = {
   navRight: {
     display: "flex",
     alignItems: "center",
-    gap: "10px",
+    gap: "8px",
   },
   menuButton: {
     display: "flex",
@@ -294,6 +592,107 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     color: "var(--text-muted)",
     fontWeight: 500,
     display: "none",
+  },
+  alertBellBtn: {
+    position: "relative",
+    background: "var(--bg-surface-elevated)",
+    color: "var(--text-primary)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "6px",
+    padding: "8px 10px",
+    cursor: "pointer",
+    minHeight: "40px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  alertBellBadge: {
+    position: "absolute",
+    top: "-4px",
+    right: "-4px",
+    backgroundColor: "var(--accent-rose)",
+    color: "#ffffff",
+    fontSize: "0.65rem",
+    fontWeight: 700,
+    padding: "1px 5px",
+    borderRadius: "10px",
+    lineHeight: 1,
+  },
+  alertDropdown: {
+    position: "absolute",
+    top: "48px",
+    right: 0,
+    width: "320px",
+    backgroundColor: "var(--bg-surface)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "8px",
+    boxShadow: "0 8px 30px rgba(0, 0, 0, 0.3)",
+    zIndex: 150,
+    overflow: "hidden",
+  },
+  alertDropdownHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "10px 12px",
+    borderBottom: "1px solid var(--border-subtle)",
+    backgroundColor: "var(--bg-surface-elevated)",
+  },
+  alertDropdownTitle: {
+    fontSize: "0.8rem",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    color: "var(--text-primary)",
+  },
+  markReadBtn: {
+    background: "transparent",
+    border: "none",
+    color: "var(--accent-primary)",
+    fontSize: "0.75rem",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  alertList: {
+    maxHeight: "340px",
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+  },
+  emptyAlertNotice: {
+    padding: "2rem 1rem",
+    textAlign: "center",
+    fontSize: "0.8rem",
+    color: "var(--text-muted)",
+  },
+  alertItem: {
+    padding: "10px 12px",
+    borderBottom: "1px solid var(--border-subtle)",
+    display: "flex",
+    flexDirection: "column",
+    gap: "3px",
+  },
+  alertTopRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: "0.65rem",
+    fontWeight: 700,
+  },
+  alertTag: {
+    textTransform: "uppercase",
+  },
+  alertTime: {
+    color: "var(--text-muted)",
+    fontWeight: 400,
+  },
+  alertItemTitle: {
+    fontSize: "0.8rem",
+    fontWeight: 600,
+    color: "var(--text-primary)",
+  },
+  alertItemContent: {
+    fontSize: "0.75rem",
+    color: "var(--text-secondary)",
+    lineHeight: 1.3,
   },
   quickCommsButton: {
     display: "flex",
@@ -343,7 +742,7 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     top: 0,
     left: 0,
     bottom: 0,
-    width: "min(300px, 80vw)",
+    width: "min(320px, 85vw)",
     backgroundColor: "var(--bg-surface)",
     borderRight: "1px solid var(--border-default)",
     zIndex: 100,
@@ -377,8 +776,8 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     minWidth: "40px",
   },
   operatorInfo: {
-    margin: "1rem",
-    padding: "0.85rem",
+    margin: "0.75rem 1rem 0.5rem 1rem",
+    padding: "0.75rem",
     backgroundColor: "var(--bg-surface-elevated)",
     border: "1px solid var(--border-default)",
     borderRadius: "6px",
@@ -411,60 +810,183 @@ const layoutStyles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: "2px",
-    padding: "0.5rem 0.5rem",
-    flexGrow: 1,
+    padding: "0.5rem",
+    borderBottom: "1px solid var(--border-subtle)",
   },
   navLink: {
     display: "flex",
     alignItems: "center",
     gap: "10px",
-    padding: "10px 12px",
+    padding: "8px 12px",
     color: "var(--text-secondary)",
     textDecoration: "none",
-    fontSize: "0.9rem",
+    fontSize: "0.85rem",
     borderRadius: "6px",
     fontWeight: 500,
-    minHeight: "44px",
+    minHeight: "40px",
   },
   navLinkActive: {
     color: "var(--text-primary)",
     backgroundColor: "var(--bg-surface-elevated)",
     fontWeight: 600,
   },
-  sidebarMessengerBtn: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "10px 12px",
-    color: "var(--accent-primary)",
-    background: "transparent",
-    border: "none",
-    fontSize: "0.9rem",
-    borderRadius: "6px",
-    fontWeight: 600,
-    minHeight: "44px",
-    cursor: "pointer",
-    width: "100%",
-    textAlign: "left",
-  },
   navIcon: {
     fontSize: "1rem",
   },
-  drawerFooter: {
+  squadSection: {
+    flexGrow: 1,
+    overflowY: "auto",
+    padding: "0.75rem 1rem",
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+  },
+  squadHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingBottom: "4px",
+  },
+  squadTitle: {
+    fontSize: "0.75rem",
+    fontWeight: 700,
+    color: "var(--text-muted)",
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+  },
+  squadCountPill: {
+    fontSize: "0.65rem",
+    backgroundColor: "var(--bg-surface-elevated)",
+    color: "var(--accent-emerald)",
+    border: "1px solid var(--border-default)",
+    padding: "1px 6px",
+    borderRadius: "10px",
+    fontWeight: 700,
+  },
+  formSquadBtn: {
+    background: "var(--bg-surface-elevated)",
+    color: "var(--accent-primary)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "4px",
+    padding: "2px 8px",
+    fontSize: "0.75rem",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  activeSquadCards: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+  },
+  squadBadgeCard: {
+    backgroundColor: "var(--bg-surface-elevated)",
+    border: "1px solid var(--border-default)",
+    borderRadius: "6px",
+    padding: "8px 10px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "3px",
+  },
+  squadBadgeTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  squadBadgeName: {
+    fontSize: "0.85rem",
+    fontWeight: 700,
+    color: "var(--text-primary)",
+  },
+  squadCodePill: {
+    fontSize: "0.7rem",
+    fontWeight: 700,
+    color: "var(--accent-primary)",
+    fontFamily: "monospace",
+  },
+  squadMissionText: {
+    fontSize: "0.75rem",
+    color: "var(--text-secondary)",
+    lineHeight: 1.3,
+  },
+  squadMetaLine: {
+    fontSize: "0.65rem",
+    color: "var(--text-muted)",
+    marginTop: "2px",
+  },
+  squadRosterList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+    marginTop: "4px",
+  },
+  squadOperatorItem: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "6px 8px",
+    backgroundColor: "var(--bg-surface-elevated)",
+    borderRadius: "6px",
+    border: "1px solid var(--border-subtle)",
+  },
+  squadOperatorItemInteractive: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "6px 8px",
+    backgroundColor: "var(--bg-surface-elevated)",
+    borderRadius: "6px",
+    border: "1px solid var(--border-subtle)",
+    cursor: "pointer",
+  },
+  statusDotActive: {
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    backgroundColor: "var(--accent-emerald)",
+    display: "inline-block",
+  },
+  statusDotIdle: {
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    backgroundColor: "var(--accent-amber)",
+    display: "inline-block",
+  },
+  squadCallsign: {
+    fontSize: "0.75rem",
+    fontWeight: 700,
+    color: "var(--text-primary)",
+    fontFamily: "monospace",
+  },
+  squadRole: {
+    fontSize: "0.65rem",
+    color: "var(--text-muted)",
+  },
+  commActionIcon: {
+    color: "var(--accent-primary)",
+    fontSize: "0.8rem",
+  },
+  squadEmptyPrompt: {
     padding: "1rem",
+    textAlign: "center",
+    color: "var(--text-muted)",
+    fontSize: "0.75rem",
+    fontStyle: "italic",
+  },
+  drawerFooter: {
+    padding: "0.75rem 1rem",
     borderTop: "1px solid var(--border-default)",
   },
   logoutButton: {
     width: "100%",
-    padding: "10px",
+    padding: "8px",
     background: "var(--bg-surface-elevated)",
     color: "var(--accent-rose)",
     border: "1px solid var(--border-default)",
     borderRadius: "6px",
     cursor: "pointer",
-    fontSize: "0.85rem",
+    fontSize: "0.8rem",
     fontWeight: 600,
-    minHeight: "44px",
   },
   contentArea: {
     flexGrow: 1,
