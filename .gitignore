@@ -9,6 +9,10 @@ build/
 .next/
 out/
 
+# Uploaded investigative media
+uploads/
+apps/api/uploads/
+
 # Environment and sensitive keys
 .env
 .env.*
